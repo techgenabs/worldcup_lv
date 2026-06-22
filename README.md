@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # WorldCup AI 2026
 
 AI-powered World Cup tournament management platform for football, cricket, and tournament-style competitions.
@@ -100,3 +101,6 @@ Core endpoints:
 - Render or Railway: run `uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`.
 - AWS or Azure: deploy the Docker image behind a managed load balancer.
 - Vercel: host the frontend separately and point it at the FastAPI backend.
+=======
+# worldcup_lv
+>>>>>>> 176850bf06e6e5b7e1772ff9cfc30b12b4f37e22
