@@ -444,7 +444,7 @@ function Login({ onLogin }) {
     <main className="min-h-screen wc-bg grid place-items-center p-4">
       <section className="glass max-w-md w-full p-6 rounded-lg shadow-2xl">
         <div className="text-sm font-black uppercase tracking-wide text-emerald-800">WorldCup 2026</div>
-        <h1 className="mt-2 text-4xl font-black text-slate-950">Prediction command center</h1>
+        <h1 className="mt-2 text-4xl font-black text-slate-950">Servey center</h1>
         <p className="mt-3 text-slate-700">Predict exact scores, lock picks before kickoff, track points, ranks, reports, and results.</p>
         <div className="mt-5 grid grid-cols-2 gap-2 rounded-lg bg-white/60 p-1">
           <button type="button" className={`btn ${mode === "login" ? "btn-primary" : "bg-white"}`} onClick={() => setMode("login")}>Sign in</button>
