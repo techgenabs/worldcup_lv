@@ -1,0 +1,10 @@
+services:
+  worldcup-ai:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./exports:/app/exports
+      - ./worldcup_ai.db:/app/worldcup_ai.db

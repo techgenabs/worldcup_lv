@@ -1,0 +1,68 @@
+body {
+  margin: 0;
+  background: #f7f9fb;
+  color: #17202a;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(14px);
+}
+
+.wc-bg {
+  background:
+    linear-gradient(120deg, rgba(0, 124, 90, 0.88), rgba(194, 34, 56, 0.78)),
+    url("https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=1800&q=80");
+  background-size: cover;
+  background-position: center;
+}
+
+.card {
+  border: 1px solid rgba(23, 32, 42, 0.09);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.btn {
+  border-radius: 8px;
+  padding: 0.65rem 0.9rem;
+  font-weight: 700;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn-primary {
+  background: #007c5a;
+  color: white;
+  box-shadow: 0 10px 20px rgba(0, 124, 90, 0.22);
+}
+
+.btn-secondary {
+  background: #17202a;
+  color: white;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+  background: white;
+}
+
+.pill {
+  border-radius: 999px;
+  padding: 0.18rem 0.62rem;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.history-row {
+  opacity: 0.58;
+  background: #f1f5f9;
+}

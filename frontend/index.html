@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WorldCup 2026</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      fetch("/assets/app.jsx?v=2.8")
+        .then((response) => response.text())
+        .then((source) => {
+          const compiled = Babel.transform(source, {
+            presets: ["env"],
+            plugins: [[Babel.availablePlugins["transform-react-jsx"], { runtime: "classic" }]],
+          }).code;
+          const script = document.createElement("script");
+          script.textContent = compiled;
+          document.body.appendChild(script);
+        })
+        .catch((error) => {
+          document.getElementById("root").textContent = "Unable to load app: " + error.message;
+        });
+    </script>
+  </body>
+</html>
