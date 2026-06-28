@@ -569,9 +569,13 @@ def notify_match_participants(match_id: int, admin: dict = Depends(admin_user)):
             queue_notification(db, p["email"], subject, body, p["id"])
             notified += 1
 
+       # REPLACE WITH:
         return {
             "status": "success",
             "match": game_label,
+            "sent": notified,
+            "skipped": 0,
+            "failed": 0,
             "notified": notified,
             "message": f"Queued notifications for {notified} participants"
         }
