@@ -21,10 +21,18 @@ def _is_postgres() -> bool:
 
 def _convert_sql(sql: str) -> str:
     """Convert SQLite SQL to PostgreSQL compatible SQL automatically."""
+    # Convert positional placeholders
     sql = sql.replace("?", "%s")
-    sql = re.sub(r"datetime\('now'\)", "NOW()", sql, flags=re.IGNORECASE)
+    
+    # SQLite's datetime('now') returns text. To prevent Postgres from throwing a 
+    # "text < timestamp with time zone" operator error against your TEXT date columns,
+    # we convert it to NOW()::text to preserve text-to-text comparison compatibility.
+    sql = re.sub(r"datetime\('now'\)", "NOW()::text", sql, flags=re.IGNORECASE)
+    
+    # Handle standard insert translation differences
     sql = re.sub(r"INSERT OR IGNORE INTO", "INSERT INTO", sql, flags=re.IGNORECASE)
     sql = re.sub(r"INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY", sql, flags=re.IGNORECASE)
+    
     return sql
 
 
