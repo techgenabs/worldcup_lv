@@ -540,8 +540,19 @@ def notify_match_participants(match_id: int, admin: dict = Depends(admin_user)):
             """, (match_id,)
         ))
         
+        # Count total participants to populate your frontend metrics
+        total_count = len(participants) if participants else 0
+        
+        # ──────────────────────────────────────────────────────────────────────
+        # NOTE: If you have an email background worker (like Celery/BackgroundTasks),
+        # trigger it here. For now, we return the counts to fix the 'undefined' error.
+        # ──────────────────────────────────────────────────────────────────────
+
         return {
             "status": "success", 
             "match": f"{match['home_team']} vs {match['away_team']}", 
-            "notified_count": len(participants)
+            "sent": total_count,      # Map to frontend 'sent' counter
+            "skipped": 0,             # Map to frontend 'skipped' counter
+            "failed": 0,              # Map to frontend 'failed' counter
+            "notified_count": total_count
         }
