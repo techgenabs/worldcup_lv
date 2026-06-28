@@ -565,17 +565,22 @@ def notify_match_participants(match_id: int, admin: dict = Depends(admin_user)):
                 f"Check leaderboard: https://worldcup-lv.onrender.com\n\n"
                 f"Good luck!\nWorldCup Prediction Team"
             )
-            from ..services.emailer import queue_notification
-            queue_notification(db, p["email"], subject, body, p["id"])
-            notified += 1
+          from ..services.emailer import send_email, queue_notification
+            try:
+                status = send_email(p["email"], subject, body)
+                queue_notification(db, p["email"], subject, body, p["id"])
+                if status == "sent":
+                    sent += 1
+                else:
+                    skipped += 1
+            except Exception as e:
+                failed += 1
 
-       # REPLACE WITH:
         return {
             "status": "success",
             "match": game_label,
-            "sent": notified,
-            "skipped": 0,
-            "failed": 0,
-            "notified": notified,
-            "message": f"Queued notifications for {notified} participants"
+            "sent": sent,
+            "skipped": skipped,
+            "failed": failed,
+            "message": f"Sent:{sent}, Skipped:{skipped}, Failed:{failed}"
         }
