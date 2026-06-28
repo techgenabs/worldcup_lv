@@ -143,7 +143,13 @@ def reset_leaderboard(admin: dict = Depends(admin_user)):
         count = list(res.values())[0] if res else 0
         db.execute("UPDATE leaderboards SET total_points=0, exact_matches=0, winner_count=0, accuracy=0, rank=NULL, badges=''")
         return {"message": f"Reset {count} leaderboard entries.", "reset": count}
+# Change line 143 from the single-line fetch to a safe check:
 
+result = db.execute("SELECT COUNT(*) FROM users WHERE role='user'").fetchone()
+user_count = result[0] if result else 0
+
+# Then use 'user_count' in your analytics dictionary payload:
+"users": user_count
 
 # ── Analytics ──────────────────────────────────────────────────────────────
 @router.get("/analytics")
