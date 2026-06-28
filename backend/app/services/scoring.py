@@ -77,49 +77,92 @@ def score_prediction(prediction: dict, match: dict) -> tuple[int, int, str]:
     return base + bonus, 1 if base else 0, reason
 
 
-def _fetch_one_as_dict(cursor) -> dict:
-    """
-    Safely fetch one row as a dict from either sqlite3 or psycopg2 cursor.
-    Always returns a dict, never None or a tuple.
-    """
+def _safe_fetchone(cursor) -> dict:
     result = cursor.fetchone()
     if result is None:
         return {}
     if isinstance(result, dict):
         return result
-    # psycopg2 returns tuples — convert using cursor description
     if hasattr(cursor, '_cur') and cursor._cur.description:
         cols = [d[0] for d in cursor._cur.description]
         return dict(zip(cols, result))
-    # fallback for raw psycopg2 cursor
     if hasattr(cursor, 'description') and cursor.description:
         cols = [d[0] for d in cursor.description]
         return dict(zip(cols, result))
     return {}
 
 
-def _fetch_all_as_dicts(cursor) -> list[dict]:
-    """
-    Safely fetch all rows as dicts from either sqlite3 or psycopg2 cursor.
-    Always returns a list of dicts.
-    """
+def _safe_fetchall(cursor) -> list[dict]:
     results = cursor.fetchall()
     if not results:
         return []
-    if results and isinstance(results[0], dict):
+    if isinstance(results[0], dict):
         return results
-    # psycopg2 returns tuples
     if hasattr(cursor, '_cur') and cursor._cur.description:
         cols = [d[0] for d in cursor._cur.description]
-        return [dict(zip(cols, row)) for row in results]
+        return [dict(zip(cols, r)) for r in results]
     if hasattr(cursor, 'description') and cursor.description:
         cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in results]
-    return [dict(row) if hasattr(row, 'keys') else {} for row in results]
+        return [dict(zip(cols, r)) for r in results]
+    return [dict(r) if hasattr(r, 'keys') else {} for r in results]
+
+
+def _upsert_leaderboard(db, item: dict, season: str, index: int, badges: list) -> None:
+    from ..database import _is_postgres
+    if _is_postgres():
+        raw_conn = db._conn
+        cur = raw_conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO leaderboards
+                (user_id, season, total_points, exact_matches, winner_count,
+                 predictions_count, accuracy, rank, badges, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id, season) DO UPDATE
+                SET total_points      = EXCLUDED.total_points,
+                    exact_matches     = EXCLUDED.exact_matches,
+                    winner_count      = EXCLUDED.winner_count,
+                    predictions_count = EXCLUDED.predictions_count,
+                    accuracy          = EXCLUDED.accuracy,
+                    rank              = EXCLUDED.rank,
+                    badges            = EXCLUDED.badges,
+                    updated_at        = CURRENT_TIMESTAMP
+            """,
+            (
+                item["user_id"], season,
+                item["total_points"], item["exact_matches"],
+                item["winner_count"], item["predictions_count"],
+                item["accuracy"], index, ", ".join(badges),
+            ),
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO leaderboards
+                (user_id, season, total_points, exact_matches, winner_count,
+                 predictions_count, accuracy, rank, badges, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, season)
+            DO UPDATE SET total_points = excluded.total_points,
+                          exact_matches = excluded.exact_matches,
+                          winner_count = excluded.winner_count,
+                          predictions_count = excluded.predictions_count,
+                          accuracy = excluded.accuracy,
+                          rank = excluded.rank,
+                          badges = excluded.badges,
+                          updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                item["user_id"], season,
+                item["total_points"], item["exact_matches"],
+                item["winner_count"], item["predictions_count"],
+                item["accuracy"], index, ", ".join(badges),
+            ),
+        )
 
 
 def lock_due_predictions(db) -> int:
-    reopen = _fetch_all_as_dicts(
+    reopen = _safe_fetchall(
         db.execute(
             """
             SELECT * FROM matches
@@ -139,7 +182,7 @@ def lock_due_predictions(db) -> int:
                 (match["id"],),
             )
 
-    matches = _fetch_all_as_dicts(
+    matches = _safe_fetchall(
         db.execute(
             "SELECT * FROM matches WHERE status = 'scheduled' AND match_date IS NOT NULL"
         )
@@ -157,7 +200,7 @@ def lock_due_predictions(db) -> int:
             "UPDATE predictions SET locked_at = COALESCE(locked_at, ?) WHERE match_id = ?",
             (timestamp, match["id"])
         )
-        users = _fetch_all_as_dicts(
+        users = _safe_fetchall(
             db.execute(
                 """
                 SELECT u.id, u.email, p.predicted_home_score, p.predicted_away_score
@@ -181,10 +224,10 @@ def lock_due_predictions(db) -> int:
 
 
 def calculate_match_points(db, match_id: int) -> int:
-    match = _fetch_one_as_dict(
+    match = _safe_fetchone(
         db.execute("SELECT * FROM matches WHERE id = ?", (match_id,))
     )
-    predictions = _fetch_all_as_dicts(
+    predictions = _safe_fetchall(
         db.execute("SELECT * FROM predictions WHERE match_id = ?", (match_id,))
     )
     updated = 0
@@ -205,14 +248,14 @@ def calculate_match_points(db, match_id: int) -> int:
 
 
 def update_leaderboard(db, season: str = "2026") -> list[dict]:
-    users = _fetch_all_as_dicts(
+    users = _safe_fetchall(
         db.execute(
             "SELECT id, name FROM users WHERE role = 'user' AND is_active = 1"
         )
     )
     result_rows = []
     for user in users:
-        stats = _fetch_one_as_dict(
+        stats = _safe_fetchone(
             db.execute(
                 """
                 SELECT COALESCE(SUM(points_awarded), 0) AS total_points,
@@ -225,7 +268,6 @@ def update_leaderboard(db, season: str = "2026") -> list[dict]:
                 (user["id"],),
             )
         )
-        # Safe defaults if stats is empty
         total_points = int(stats.get("total_points") or 0)
         exact_matches = int(stats.get("exact_matches") or 0)
         winner_count = int(stats.get("winner_count") or 0)
@@ -259,33 +301,8 @@ def update_leaderboard(db, season: str = "2026") -> list[dict]:
         if item["exact_matches"] >= 3:
             badges.append("Champion Predictor")
 
-        db.execute(
-            """
-            INSERT INTO leaderboards (user_id, season, total_points, exact_matches, winner_count,
-                                      predictions_count, accuracy, rank, badges, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id, season)
-            DO UPDATE SET total_points = excluded.total_points,
-                          exact_matches = excluded.exact_matches,
-                          winner_count = excluded.winner_count,
-                          predictions_count = excluded.predictions_count,
-                          accuracy = excluded.accuracy,
-                          rank = excluded.rank,
-                          badges = excluded.badges,
-                          updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                item["user_id"],
-                season,
-                item["total_points"],
-                item["exact_matches"],
-                item["winner_count"],
-                item["predictions_count"],
-                item["accuracy"],
-                index,
-                ", ".join(badges),
-            ),
-        )
+        _upsert_leaderboard(db, item, season, index, badges)
+
         item["rank"] = index
         item["badges"] = badges
 
@@ -295,10 +312,10 @@ def update_leaderboard(db, season: str = "2026") -> list[dict]:
 def complete_match_workflow(db, match_id: int) -> dict:
     count = calculate_match_points(db, match_id)
     reports = export_reports(db, season="2026")
-    match = _fetch_one_as_dict(
+    match = _safe_fetchone(
         db.execute("SELECT * FROM matches WHERE id = ?", (match_id,))
     )
-    users = _fetch_all_as_dicts(
+    users = _safe_fetchall(
         db.execute("SELECT id, email FROM users WHERE is_active = 1")
     )
     for user in users:
