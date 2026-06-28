@@ -515,3 +515,63 @@ def generate_exports(tournament_id: int, admin: dict = Depends(admin_user)):
             }
         except Exception as e:
             return {"status": "error", "detail": f"Failed compiling report layout: {str(e)}"}
+@router.post("/notify/match-participants/{match_id}")
+def notify_match_participants(match_id: int, admin: dict = Depends(admin_user)):
+    """Send email notification to all users who predicted this match."""
+    with get_db() as db:
+        match = row(db.execute("""
+            SELECT m.*, ht.name AS home_team, at.name AS away_team
+            FROM matches m
+            JOIN teams ht ON ht.id = m.home_team_id
+            JOIN teams at ON at.id = m.away_team_id
+            WHERE m.id = ?
+        """, (match_id,)))
+
+        if not match:
+            raise HTTPException(status_code=404, detail="Match not found")
+
+        participants = rows(db.execute("""
+            SELECT u.id, u.email, u.name,
+                   p.predicted_home_score, p.predicted_away_score,
+                   p.points_awarded, p.scoring_reason
+            FROM predictions p
+            JOIN users u ON u.id = p.user_id
+            WHERE p.match_id = ?
+        """, (match_id,)))
+
+        if not participants:
+            return {"status": "no_participants", "message": "No predictions found", "notified": 0}
+
+        game_label = match.get("game_no") or f"Match {match_id}"
+        home = match.get("home_team", "Home")
+        away = match.get("away_team", "Away")
+        home_score = match.get("home_score")
+        away_score = match.get("away_score")
+
+        if home_score is not None and away_score is not None:
+            result_line = f"Result: {home} {home_score} - {away_score} {away}"
+        else:
+            result_line = f"Match: {home} vs {away} (result pending)"
+
+        notified = 0
+        for p in participants:
+            subject = f"⚽ {game_label} Update — {home} vs {away}"
+            body = (
+                f"Hi {p['name']},\n\n"
+                f"{result_line}\n\n"
+                f"Your prediction: {p['predicted_home_score']} - {p['predicted_away_score']}\n"
+                f"Points awarded: {p['points_awarded'] or 0}\n"
+                f"Result: {p['scoring_reason'] or 'Pending'}\n\n"
+                f"Check leaderboard: https://worldcup-lv.onrender.com\n\n"
+                f"Good luck!\nWorldCup Prediction Team"
+            )
+            from ..services.emailer import queue_notification
+            queue_notification(db, p["email"], subject, body, p["id"])
+            notified += 1
+
+        return {
+            "status": "success",
+            "match": game_label,
+            "notified": notified,
+            "message": f"Queued notifications for {notified} participants"
+        }
