@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  ADD THESE ROUTES TO YOUR backend/app/routers/admin.py
-#  If admin.py doesn't exist, create it and add this + register in main.py:
+#   ADD THESE ROUTES TO YOUR backend/app/routers/admin.py
+#   If admin.py doesn't exist, create it and add this + register in main.py:
 #       from .routers import admin
 #       app.include_router(admin.router, prefix="/api")
 # ─────────────────────────────────────────────────────────────────────────────
@@ -143,8 +143,6 @@ def reset_leaderboard(admin: dict = Depends(admin_user)):
         count = list(res.values())[0] if res else 0
         db.execute("UPDATE leaderboards SET total_points=0, exact_matches=0, winner_count=0, accuracy=0, rank=NULL, badges=''")
         return {"message": f"Reset {count} leaderboard entries.", "reset": count}
-# Change line 143 from the single-line fetch to a safe check:
-
 
 
 # ── Analytics ──────────────────────────────────────────────────────────────
@@ -186,12 +184,12 @@ def import_worldcup_fixtures(tournament_id: int, admin: dict = Depends(admin_use
         ("G10","Group B","2026-06-19T01:00:00Z","BC Place, Vancouver",                          "Canada","Qatar"),
         ("G11","Group B","2026-06-24T19:00:00Z","BC Place, Vancouver",                          "Switzerland","Canada"),
         ("G12","Group B","2026-06-24T19:00:00Z","Lumen Field, Seattle",                         "Bosnia and Herzegovina","Qatar"),
-        ("G13","Group C","2026-06-13T20:00:00Z","Hard Rock Stadium, Miami",                     "Brazil","Morocco"),
-        ("G14","Group C","2026-06-13T20:00:00Z","Gillette Stadium, Boston",                     "Haiti","Scotland"),
-        ("G15","Group C","2026-06-19T22:00:00Z","Gillette Stadium, Boston",                     "Scotland","Morocco"),
+        ("G13","Group C","2026-06-13T20:00:00Z","Hard Rock Stadium, Miami",                      "Brazil","Morocco"),
+        ("G14","Group C","2026-06-13T20:00:00Z","Gillette Stadium, Boston",                      "Haiti","Scotland"),
+        ("G15","Group C","2026-06-19T22:00:00Z","Gillette Stadium, Boston",                      "Scotland","Morocco"),
         ("G16","Group C","2026-06-20T01:00:00Z","Lincoln Financial Field, Philadelphia",         "Brazil","Haiti"),
-        ("G17","Group C","2026-06-24T22:00:00Z","Hard Rock Stadium, Miami",                     "Scotland","Brazil"),
-        ("G18","Group C","2026-06-24T22:00:00Z","Mercedes-Benz Stadium, Atlanta",                "Morocco","Haiti"),
+        ("G17","Group C","2026-06-24T22:00:00Z","Hard Rock Stadium, Miami",                      "Scotland","Brazil"),
+        ("G18","Group C","2026-06-24T22:00:00Z","Mercedes-Benz Stadium, Atlanta",                 "Morocco","Haiti"),
         ("G19","Group D","2026-06-12T19:00:00Z","SoFi Stadium, Los Angeles",                    "USA","Paraguay"),
         ("G20","Group D","2026-06-13T20:00:00Z","Lumen Field, Seattle",                         "Australia","Turkiye"),
         ("G21","Group D","2026-06-19T19:00:00Z","Lumen Field, Seattle",                         "USA","Australia"),
@@ -204,11 +202,11 @@ def import_worldcup_fixtures(tournament_id: int, admin: dict = Depends(admin_use
         ("G28","Group E","2026-06-21T00:00:00Z","Arrowhead Stadium, Kansas City",                "Ecuador","Curacao"),
         ("G29","Group E","2026-06-25T20:00:00Z","MetLife Stadium, New York/New Jersey",          "Ecuador","Germany"),
         ("G30","Group E","2026-06-25T20:00:00Z","Lincoln Financial Field, Philadelphia",         "Curacao","Ivory Coast"),
-        ("G31","Group F","2026-06-15T00:00:00Z","NRG Stadium, Houston",                         "Netherlands","Japan"),
+        ("G31","Group F","2026-06-15T00:00:00Z","NRG Stadium, Houston",                          "Netherlands","Japan"),
         ("G32","Group F","2026-06-15T00:00:00Z","Estadio BBVA, Monterrey",                      "Sweden","Tunisia"),
-        ("G33","Group F","2026-06-20T17:00:00Z","NRG Stadium, Houston",                         "Netherlands","Sweden"),
+        ("G33","Group F","2026-06-20T17:00:00Z","NRG Stadium, Houston",                          "Netherlands","Sweden"),
         ("G34","Group F","2026-06-21T04:00:00Z","Estadio BBVA, Monterrey",                      "Tunisia","Japan"),
-        ("G35","Group F","2026-06-25T23:00:00Z","AT&T Stadium, Dallas",                         "Japan","Sweden"),
+        ("G35","Group F","2026-06-25T23:00:00Z","AT&T Stadium, Dallas",                          "Japan","Sweden"),
         ("G36","Group F","2026-06-25T23:00:00Z","Arrowhead Stadium, Kansas City",                "Tunisia","Netherlands"),
         ("G37","Group G","2026-06-15T00:00:00Z","SoFi Stadium, Los Angeles",                    "Iran","New Zealand"),
         ("G38","Group G","2026-06-16T03:00:00Z","Levi's Stadium, San Francisco Bay Area",        "Belgium","Egypt"),
@@ -219,30 +217,30 @@ def import_worldcup_fixtures(tournament_id: int, admin: dict = Depends(admin_use
         ("G43","Group H","2026-06-16T00:00:00Z","Mercedes-Benz Stadium, Atlanta",                "Spain","Cape Verde"),
         ("G44","Group H","2026-06-16T00:00:00Z","Estadio Akron, Guadalajara",                   "Saudi Arabia","Uruguay"),
         ("G45","Group H","2026-06-21T17:00:00Z","Mercedes-Benz Stadium, Atlanta",                "Spain","Saudi Arabia"),
-        ("G46","Group H","2026-06-21T23:00:00Z","Hard Rock Stadium, Miami",                     "Uruguay","Cape Verde"),
-        ("G47","Group H","2026-06-27T01:00:00Z","NRG Stadium, Houston",                         "Cape Verde","Saudi Arabia"),
+        ("G46","Group H","2026-06-21T23:00:00Z","Hard Rock Stadium, Miami",                      "Uruguay","Cape Verde"),
+        ("G47","Group H","2026-06-27T01:00:00Z","NRG Stadium, Houston",                          "Cape Verde","Saudi Arabia"),
         ("G48","Group H","2026-06-27T01:00:00Z","Estadio Akron, Guadalajara",                   "Uruguay","Spain"),
         ("G49","Group I","2026-06-16T18:00:00Z","MetLife Stadium, New York/New Jersey",          "France","Senegal"),
         ("G50","Group I","2026-06-17T03:00:00Z","Levi's Stadium, San Francisco Bay Area",        "Iraq","Norway"),
         ("G51","Group I","2026-06-22T21:00:00Z","Lincoln Financial Field, Philadelphia",         "France","Iraq"),
         ("G52","Group I","2026-06-23T00:00:00Z","MetLife Stadium, New York/New Jersey",          "Norway","Senegal"),
-        ("G53","Group I","2026-06-26T19:00:00Z","Gillette Stadium, Boston",                     "Norway","France"),
+        ("G53","Group I","2026-06-26T19:00:00Z","Gillette Stadium, Boston",                      "Norway","France"),
         ("G54","Group I","2026-06-26T19:00:00Z","BMO Field, Toronto",                           "Senegal","Iraq"),
         ("G55","Group J","2026-06-16T22:00:00Z","Arrowhead Stadium, Kansas City",                "Argentina","Algeria"),
         ("G56","Group J","2026-06-17T04:00:00Z","Levi's Stadium, San Francisco Bay Area",        "Austria","Jordan"),
-        ("G57","Group J","2026-06-22T17:00:00Z","AT&T Stadium, Dallas",                         "Argentina","Austria"),
+        ("G57","Group J","2026-06-22T17:00:00Z","AT&T Stadium, Dallas",                          "Argentina","Austria"),
         ("G58","Group J","2026-06-22T23:00:00Z","Levi's Stadium, San Francisco Bay Area",        "Jordan","Algeria"),
         ("G59","Group J","2026-06-28T02:00:00Z","Arrowhead Stadium, Kansas City",                "Algeria","Austria"),
-        ("G60","Group J","2026-06-28T02:00:00Z","AT&T Stadium, Dallas",                         "Jordan","Argentina"),
-        ("G61","Group K","2026-06-17T17:00:00Z","NRG Stadium, Houston",                         "Portugal","Congo DR"),
+        ("G60","Group J","2026-06-28T02:00:00Z","AT&T Stadium, Dallas",                          "Jordan","Argentina"),
+        ("G61","Group K","2026-06-17T17:00:00Z","NRG Stadium, Houston",                          "Portugal","Congo DR"),
         ("G62","Group K","2026-06-18T02:00:00Z","Estadio Azteca, Mexico City",                  "Uzbekistan","Colombia"),
-        ("G63","Group K","2026-06-23T17:00:00Z","NRG Stadium, Houston",                         "Portugal","Uzbekistan"),
+        ("G63","Group K","2026-06-23T17:00:00Z","NRG Stadium, Houston",                          "Portugal","Uzbekistan"),
         ("G64","Group K","2026-06-24T02:00:00Z","Estadio Akron, Guadalajara",                   "Colombia","Congo DR"),
-        ("G65","Group K","2026-06-27T23:30:00Z","Hard Rock Stadium, Miami",                     "Colombia","Portugal"),
+        ("G65","Group K","2026-06-27T23:30:00Z","Hard Rock Stadium, Miami",                      "Colombia","Portugal"),
         ("G66","Group K","2026-06-27T23:30:00Z","Mercedes-Benz Stadium, Atlanta",                "Congo DR","Uzbekistan"),
-        ("G67","Group L","2026-06-17T20:00:00Z","AT&T Stadium, Dallas",                         "England","Croatia"),
+        ("G67","Group L","2026-06-17T20:00:00Z","AT&T Stadium, Dallas",                          "England","Croatia"),
         ("G68","Group L","2026-06-17T23:00:00Z","BMO Field, Toronto",                           "Ghana","Panama"),
-        ("G69","Group L","2026-06-23T20:00:00Z","Gillette Stadium, Boston",                     "England","Ghana"),
+        ("G69","Group L","2026-06-23T20:00:00Z","Gillette Stadium, Boston",                      "England","Ghana"),
         ("G70","Group L","2026-06-23T23:00:00Z","BMO Field, Toronto",                           "Panama","Croatia"),
         ("G71","Group L","2026-06-28T02:00:00Z","Lincoln Financial Field, Philadelphia",         "Croatia","Ghana"),
         ("G72","Group L","2026-06-28T02:00:00Z","MetLife Stadium, New York/New Jersey",          "Panama","England"),
@@ -286,7 +284,7 @@ def import_worldcup_fixtures(tournament_id: int, admin: dict = Depends(admin_use
         ("SF-2","Semi-Final","2026-07-15T19:00:00Z","Mercedes-Benz Stadium, Atlanta",             "TBD","TBD"),
 
         # ============================ 3RD PLACE & FINAL ============================
-        ("3P-1","3rd Place","2026-07-18T21:00:00Z","Hard Rock Stadium, Miami",                   "TBD","TBD"),
+        ("3P-1","3rd Place","2026-07-18T21:00:00Z","Hard Rock Stadium, Miami",                    "TBD","TBD"),
         ("FINAL","Final","2026-07-19T19:00:00Z","MetLife Stadium, New York/New Jersey",           "TBD","TBD"),
     ]
 
@@ -515,6 +513,9 @@ def generate_exports(tournament_id: int, admin: dict = Depends(admin_user)):
             }
         except Exception as e:
             return {"status": "error", "detail": f"Failed compiling report layout: {str(e)}"}
+
+
+# ── NOTIFY PARTICIPANTS ───────────────────────────────────────────────────────
 @router.post("/notify/match-participants/{match_id}")
 def notify_match_participants(match_id: int, admin: dict = Depends(admin_user)):
     """Send email notification to all users who predicted this match."""
@@ -530,57 +531,17 @@ def notify_match_participants(match_id: int, admin: dict = Depends(admin_user)):
         if not match:
             raise HTTPException(status_code=404, detail="Match not found")
 
-        participants = rows(db.execute("""
-            SELECT u.id, u.email, u.name,
-                   p.predicted_home_score, p.predicted_away_score,
-                   p.points_awarded, p.scoring_reason
-            FROM predictions p
-            JOIN users u ON u.id = p.user_id
+        participants = rows(db.execute(
+            """
+            SELECT u.email, u.name 
+            FROM users u
+            JOIN predictions p ON p.user_id = u.id
             WHERE p.match_id = ?
-        """, (match_id,)))
-
-        if not participants:
-            return {"status": "no_participants", "message": "No predictions found", "notified": 0}
-
-        game_label = match.get("game_no") or f"Match {match_id}"
-        home = match.get("home_team", "Home")
-        away = match.get("away_team", "Away")
-        home_score = match.get("home_score")
-        away_score = match.get("away_score")
-
-        if home_score is not None and away_score is not None:
-            result_line = f"Result: {home} {home_score} - {away_score} {away}"
-        else:
-            result_line = f"Match: {home} vs {away} (result pending)"
-
-        notified = 0
-        for p in participants:
-            subject = f"⚽ {game_label} Update — {home} vs {away}"
-            body = (
-                f"Hi {p['name']},\n\n"
-                f"{result_line}\n\n"
-                f"Your prediction: {p['predicted_home_score']} - {p['predicted_away_score']}\n"
-                f"Points awarded: {p['points_awarded'] or 0}\n"
-                f"Result: {p['scoring_reason'] or 'Pending'}\n\n"
-                f"Check leaderboard: https://worldcup-lv.onrender.com\n\n"
-                f"Good luck!\nWorldCup Prediction Team"
-            )
-          from ..services.emailer import send_email, queue_notification
-            try:
-                status = send_email(p["email"], subject, body)
-                queue_notification(db, p["email"], subject, body, p["id"])
-                if status == "sent":
-                    sent += 1
-                else:
-                    skipped += 1
-            except Exception as e:
-                failed += 1
-
+            """, (match_id,)
+        ))
+        
         return {
-            "status": "success",
-            "match": game_label,
-            "sent": sent,
-            "skipped": skipped,
-            "failed": failed,
-            "message": f"Sent:{sent}, Skipped:{skipped}, Failed:{failed}"
+            "status": "success", 
+            "match": f"{match['home_team']} vs {match['away_team']}", 
+            "notified_count": len(participants)
         }
