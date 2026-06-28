@@ -39,11 +39,6 @@ def lock_time(match_date: str | None) -> str | None:
 
 
 def is_prediction_locked(match: dict) -> bool:
-    # "locked" here covers BOTH the automatic 5-minutes-before-kickoff lock
-    # AND an admin manually closing predictions early via the Close Preds
-    # toggle. Either way, once status is "locked" it must stay treated as
-    # locked — it should never be silently re-evaluated and reopened just
-    # because the time-based deadline hasn't been reached yet.
     if match.get("status") in {"locked", "live", "completed", "cancelled"}:
         return True
     lock_at = lock_deadline(match)
@@ -82,24 +77,56 @@ def score_prediction(prediction: dict, match: dict) -> tuple[int, int, str]:
     return base + bonus, 1 if base else 0, reason
 
 
+def _fetch_one_as_dict(cursor) -> dict:
+    """
+    Safely fetch one row as a dict from either sqlite3 or psycopg2 cursor.
+    Always returns a dict, never None or a tuple.
+    """
+    result = cursor.fetchone()
+    if result is None:
+        return {}
+    if isinstance(result, dict):
+        return result
+    # psycopg2 returns tuples — convert using cursor description
+    if hasattr(cursor, '_cur') and cursor._cur.description:
+        cols = [d[0] for d in cursor._cur.description]
+        return dict(zip(cols, result))
+    # fallback for raw psycopg2 cursor
+    if hasattr(cursor, 'description') and cursor.description:
+        cols = [d[0] for d in cursor.description]
+        return dict(zip(cols, result))
+    return {}
+
+
+def _fetch_all_as_dicts(cursor) -> list[dict]:
+    """
+    Safely fetch all rows as dicts from either sqlite3 or psycopg2 cursor.
+    Always returns a list of dicts.
+    """
+    results = cursor.fetchall()
+    if not results:
+        return []
+    if results and isinstance(results[0], dict):
+        return results
+    # psycopg2 returns tuples
+    if hasattr(cursor, '_cur') and cursor._cur.description:
+        cols = [d[0] for d in cursor._cur.description]
+        return [dict(zip(cols, row)) for row in results]
+    if hasattr(cursor, 'description') and cursor.description:
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row)) for row in results]
+    return [dict(row) if hasattr(row, 'keys') else {} for row in results]
+
+
 def lock_due_predictions(db) -> int:
-    # Auto-reopen matches that are locked PURELY because their old kickoff
-    # time had passed, if an admin has since edited the schedule to push
-    # kickoff later. We must NOT reopen a match the admin explicitly closed
-    # via the "Close Preds" toggle — that sets predictions_open = 0 alongside
-    # status = 'locked', which is how we tell the two apart here. Only
-    # matches still flagged predictions_open = 1 (i.e. locked purely by the
-    # automatic time-based rule, admin never touched the toggle) are
-    # eligible to be auto-reopened.
-    reopen = [
-        dict(item)
-        for item in db.execute(
+    reopen = _fetch_all_as_dicts(
+        db.execute(
             """
             SELECT * FROM matches
             WHERE status = 'locked' AND match_date IS NOT NULL AND predictions_open = 1
             """
-        ).fetchall()
-    ]
+        )
+    )
     for match in reopen:
         deadline = lock_deadline(match)
         if deadline and datetime.now(deadline.tzinfo) < deadline:
@@ -111,28 +138,36 @@ def lock_due_predictions(db) -> int:
                 "UPDATE predictions SET locked_at = NULL WHERE match_id = ? AND scored_at IS NULL",
                 (match["id"],),
             )
-    matches = [
-        dict(item)
-        for item in db.execute(
+
+    matches = _fetch_all_as_dicts(
+        db.execute(
             "SELECT * FROM matches WHERE status = 'scheduled' AND match_date IS NOT NULL"
-        ).fetchall()
-    ]
+        )
+    )
     locked = 0
     for match in matches:
         if not is_prediction_locked(match):
             continue
         timestamp = now_iso()
-        db.execute("UPDATE matches SET status = 'locked', locked_at = COALESCE(locked_at, ?) WHERE id = ?", (timestamp, match["id"]))
-        db.execute("UPDATE predictions SET locked_at = COALESCE(locked_at, ?) WHERE match_id = ?", (timestamp, match["id"]))
-        users = db.execute(
-            """
-            SELECT u.id, u.email, p.predicted_home_score, p.predicted_away_score
-            FROM predictions p
-            JOIN users u ON u.id = p.user_id
-            WHERE p.match_id = ?
-            """,
-            (match["id"],),
-        ).fetchall()
+        db.execute(
+            "UPDATE matches SET status = 'locked', locked_at = COALESCE(locked_at, ?) WHERE id = ?",
+            (timestamp, match["id"])
+        )
+        db.execute(
+            "UPDATE predictions SET locked_at = COALESCE(locked_at, ?) WHERE match_id = ?",
+            (timestamp, match["id"])
+        )
+        users = _fetch_all_as_dicts(
+            db.execute(
+                """
+                SELECT u.id, u.email, p.predicted_home_score, p.predicted_away_score
+                FROM predictions p
+                JOIN users u ON u.id = p.user_id
+                WHERE p.match_id = ?
+                """,
+                (match["id"],),
+            )
+        )
         for item in users:
             queue_notification(
                 db,
@@ -146,8 +181,12 @@ def lock_due_predictions(db) -> int:
 
 
 def calculate_match_points(db, match_id: int) -> int:
-    match = dict(db.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone())
-    predictions = [dict(item) for item in db.execute("SELECT * FROM predictions WHERE match_id = ?", (match_id,)).fetchall()]
+    match = _fetch_one_as_dict(
+        db.execute("SELECT * FROM matches WHERE id = ?", (match_id,))
+    )
+    predictions = _fetch_all_as_dicts(
+        db.execute("SELECT * FROM predictions WHERE match_id = ?", (match_id,))
+    )
     updated = 0
     timestamp = now_iso()
     for prediction in predictions:
@@ -166,36 +205,52 @@ def calculate_match_points(db, match_id: int) -> int:
 
 
 def update_leaderboard(db, season: str = "2026") -> list[dict]:
-    users = [dict(item) for item in db.execute("SELECT id, name FROM users WHERE role = 'user' AND is_active = 1").fetchall()]
-    rows = []
+    users = _fetch_all_as_dicts(
+        db.execute(
+            "SELECT id, name FROM users WHERE role = 'user' AND is_active = 1"
+        )
+    )
+    result_rows = []
     for user in users:
-        stats = db.execute(
-            """
-            SELECT COALESCE(SUM(points_awarded), 0) AS total_points,
-                   SUM(CASE WHEN scoring_reason LIKE 'Exact Score%' THEN 1 ELSE 0 END) AS exact_matches,
-                   SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) AS winner_count,
-                   COUNT(*) AS predictions_count
-            FROM predictions
-            WHERE user_id = ? AND scored_at IS NOT NULL
-            """,
-            (user["id"],),
-        ).fetchone()
-        count = int(stats["predictions_count"] or 0)
-        winners = int(stats["winner_count"] or 0)
-        accuracy = round((winners / count * 100), 1) if count else 0
+        stats = _fetch_one_as_dict(
+            db.execute(
+                """
+                SELECT COALESCE(SUM(points_awarded), 0) AS total_points,
+                       SUM(CASE WHEN scoring_reason LIKE 'Exact Score%' THEN 1 ELSE 0 END) AS exact_matches,
+                       SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) AS winner_count,
+                       COUNT(*) AS predictions_count
+                FROM predictions
+                WHERE user_id = ? AND scored_at IS NOT NULL
+                """,
+                (user["id"],),
+            )
+        )
+        # Safe defaults if stats is empty
+        total_points = int(stats.get("total_points") or 0)
+        exact_matches = int(stats.get("exact_matches") or 0)
+        winner_count = int(stats.get("winner_count") or 0)
+        predictions_count = int(stats.get("predictions_count") or 0)
+        accuracy = round((winner_count / predictions_count * 100), 1) if predictions_count else 0
+
         row = {
             "user_id": user["id"],
             "name": user["name"],
-            "total_points": int(stats["total_points"] or 0),
-            "exact_matches": int(stats["exact_matches"] or 0),
-            "winner_count": winners,
-            "predictions_count": count,
+            "total_points": total_points,
+            "exact_matches": exact_matches,
+            "winner_count": winner_count,
+            "predictions_count": predictions_count,
             "accuracy": accuracy,
         }
-        rows.append(row)
-    rows.sort(key=lambda item: (item["total_points"], item["exact_matches"], item["accuracy"]), reverse=True)
-    best_accuracy = max([r["accuracy"] for r in rows], default=0)
-    for index, item in enumerate(rows, start=1):
+        result_rows.append(row)
+
+    result_rows.sort(
+        key=lambda item: (item["total_points"], item["exact_matches"], item["accuracy"]),
+        reverse=True
+    )
+
+    best_accuracy = max([r["accuracy"] for r in result_rows], default=0)
+
+    for index, item in enumerate(result_rows, start=1):
         badges = []
         if index == 1 and item["total_points"] > 0:
             badges.append("Top Predictor")
@@ -203,9 +258,11 @@ def update_leaderboard(db, season: str = "2026") -> list[dict]:
             badges.append("Best Accuracy")
         if item["exact_matches"] >= 3:
             badges.append("Champion Predictor")
+
         db.execute(
             """
-            INSERT INTO leaderboards (user_id, season, total_points, exact_matches, winner_count, predictions_count, accuracy, rank, badges, updated_at)
+            INSERT INTO leaderboards (user_id, season, total_points, exact_matches, winner_count,
+                                      predictions_count, accuracy, rank, badges, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id, season)
             DO UPDATE SET total_points = excluded.total_points,
@@ -231,14 +288,25 @@ def update_leaderboard(db, season: str = "2026") -> list[dict]:
         )
         item["rank"] = index
         item["badges"] = badges
-    return rows
+
+    return result_rows
 
 
 def complete_match_workflow(db, match_id: int) -> dict:
     count = calculate_match_points(db, match_id)
     reports = export_reports(db, season="2026")
-    match = dict(db.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone())
-    users = db.execute("SELECT id, email FROM users WHERE is_active = 1").fetchall()
+    match = _fetch_one_as_dict(
+        db.execute("SELECT * FROM matches WHERE id = ?", (match_id,))
+    )
+    users = _fetch_all_as_dicts(
+        db.execute("SELECT id, email FROM users WHERE is_active = 1")
+    )
     for user in users:
-        queue_notification(db, user["email"], "Match result published", f"Game {match.get('game_no') or match_id} is final. Reports are ready.", user["id"])
+        queue_notification(
+            db,
+            user["email"],
+            "Match result published",
+            f"Game {match.get('game_no') or match_id} is final. Reports are ready.",
+            user["id"]
+        )
     return {"scored_predictions": count, "reports": reports}
