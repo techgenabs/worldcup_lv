@@ -1,9 +1,21 @@
 import smtplib
 import re
+import os
+import sqlite3
 from email.message import EmailMessage
 from pathlib import Path
 
 from ..config import settings
+
+
+def get_worldcup_db_conn():
+    """
+    Directly connects to the active database file that contains the tables.
+    """
+    db_path = "worldcup_ai.db"
+    if os.path.exists(db_path):
+        return sqlite3.connect(db_path)
+    return None
 
 
 def queue_notification(db, recipient: str, subject: str, body: str, user_id: int | None = None) -> int:
@@ -46,14 +58,13 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
     sent = skipped = failed = 0
     details = []
 
-    # 1. Detect if this is a match prediction notification
     is_match_prediction = "vs" in body.lower()
     all_participants_block = ""
 
     if is_match_prediction:
         home_team, away_team = "Unknown", "Unknown"
         
-        # Parse out the clean team names from the incoming text block
+        # Parse the team names directly from the text block
         for line in body.splitlines():
             if "vs" in line.lower():
                 clean_line = re.sub(r"(match|hi|hello|dear)[^:]*:\s*", "", line, flags=re.IGNORECASE)
@@ -65,11 +76,13 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                         away_team = teams[1].strip()
                         break
 
-        # 2. Fetch all entries using your correct database relationships
         all_predictions = []
-        if home_team != "Unknown":
+        active_conn = get_worldcup_db_conn()
+
+        if active_conn:
             try:
-                cursor = db.execute(
+                # Query the true worldcup_ai.db database
+                cursor = active_conn.execute(
                     """
                     SELECT p.user_name, p.predicted_score, p.status 
                     FROM predictions p
@@ -84,16 +97,36 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                 for r in rows:
                     all_predictions.append({"name": r[0], "pred": r[1], "status": r[2] or "pending"})
             except Exception:
-                pass
+                try:
+                    # Backup query alternative column mapping layout
+                    cursor = active_conn.execute(
+                        """
+                        SELECT u.username, p.predicted_score, p.status 
+                        FROM predictions p
+                        JOIN users u ON p.user_id = u.id
+                        JOIN matches m ON p.match_id = m.id
+                        JOIN teams ht ON m.home_team_id = ht.id
+                        JOIN teams at ON m.away_team_id = at.id
+                        WHERE (ht.name LIKE ? AND at.name LIKE ?)
+                        """,
+                        (f"%{home_team}%", f"%{away_team}%")
+                    )
+                    rows = cursor.fetchall()
+                    for r in rows:
+                        all_predictions.append({"name": r[0], "pred": r[1], "status": r[2] or "pending"})
+                except Exception:
+                    pass
+            finally:
+                active_conn.close()
 
-        # Fallback: If your schema differs slightly or returns empty, use the live recipients list
+        # Fallback to current memory payload array if rows are missing
         if not all_predictions:
             for u in users:
                 p_name = u.get("username") or u.get("name") or u.get("email", "Participant").split("@")[0]
                 p_pred = u.get("predicted_score") or u.get("prediction") or "—"
                 all_predictions.append({"name": p_name, "pred": p_pred, "status": "pending"})
 
-        # Build a cleanly aligned plain-text grid table layout
+        # Structure display plain-text layout grid
         pred_lines = [
             "",
             f"All Predictions ({len(all_predictions)} participants):",
@@ -109,25 +142,33 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
         pred_lines.append(f"{'-'*24}-+-{'-'*7}")
         all_participants_block = "\n".join(pred_lines)
 
-    # 3. Email dispatch loop
+    # Dispatch loops
     for user in users:
         try:
             current_email = user["email"]
+            user_name = user.get("username") or user.get("name") or current_email.split("@")[0]
             
             if is_match_prediction:
-                user_name = user.get("username") or user.get("name") or current_email.split("@")[0]
+                clean_body = body.strip()
+                if f"Hi {user_name}" in clean_body:
+                    clean_body = clean_body.replace(f"Hi {user_name},", "").strip()
                 
-                # Append the full unified tournament matrix directly to the message body
+                # Prevent any double footers from merging
+                clean_body = clean_body.split("Check the leaderboard:")[0].split("Good luck!")[0].strip()
+
                 final_body = f"""Hi {user_name},
 
-{body.strip()}
+{clean_body}
 
 {all_participants_block}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Check the leaderboard live: https://worldcup-lv.onrender.com
+
 Good luck!
-WorldCup Prediction Team"""
+WorldCup Prediction Team
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
             else:
-                # Keep your financial payment reports perfectly intact without modification
                 final_body = body
 
             status = send_email(current_email, subject, final_body, attachments)
