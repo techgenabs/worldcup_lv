@@ -9,9 +9,7 @@ from ..config import settings
 
 
 def get_worldcup_db_conn():
-    """
-    Directly connects to the active database file that contains the tables.
-    """
+    """Connects directly to the active SQLite database file containing the tables."""
     db_path = "worldcup_ai.db"
     if os.path.exists(db_path):
         return sqlite3.connect(db_path)
@@ -58,13 +56,14 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
     sent = skipped = failed = 0
     details = []
 
+    # Check if this email relates to a match notification
     is_match_prediction = "vs" in body.lower()
     all_participants_block = ""
 
     if is_match_prediction:
         home_team, away_team = "Unknown", "Unknown"
         
-        # Parse the team names directly from the text block
+        # Parse clean home/away team strings out of the text body line containing "vs"
         for line in body.splitlines():
             if "vs" in line.lower():
                 clean_line = re.sub(r"(match|hi|hello|dear)[^:]*:\s*", "", line, flags=re.IGNORECASE)
@@ -81,11 +80,12 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
 
         if active_conn:
             try:
-                # Query the true worldcup_ai.db database
+                # Query matches exactly against your real verified database columns
                 cursor = active_conn.execute(
                     """
-                    SELECT p.user_name, p.predicted_score, p.status 
+                    SELECT u.username, p.predicted_home_score, p.predicted_away_score
                     FROM predictions p
+                    JOIN users u ON p.user_id = u.id
                     JOIN matches m ON p.match_id = m.id
                     JOIN teams ht ON m.home_team_id = ht.id
                     JOIN teams at ON m.away_team_id = at.id
@@ -95,54 +95,31 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                 )
                 rows = cursor.fetchall()
                 for r in rows:
-                    all_predictions.append({"name": r[0], "pred": r[1], "status": r[2] or "pending"})
+                    pred_score = f"{r[1]} - {r[2]}" if r[1] is not None and r[2] is not None else "—"
+                    all_predictions.append({"name": r[0], "pred": pred_score})
             except Exception:
-                try:
-                    # Backup query alternative column mapping layout
-                    cursor = active_conn.execute(
-                        """
-                        SELECT u.username, p.predicted_score, p.status 
-                        FROM predictions p
-                        JOIN users u ON p.user_id = u.id
-                        JOIN matches m ON p.match_id = m.id
-                        JOIN teams ht ON m.home_team_id = ht.id
-                        JOIN teams at ON m.away_team_id = at.id
-                        WHERE (ht.name LIKE ? AND at.name LIKE ?)
-                        """,
-                        (f"%{home_team}%", f"%{away_team}%")
-                    )
-                    rows = cursor.fetchall()
-                    for r in rows:
-                        all_predictions.append({"name": r[0], "pred": r[1], "status": r[2] or "pending"})
-                except Exception:
-                    pass
+                pass
             finally:
                 active_conn.close()
 
-        # Fallback to current memory payload array if rows are missing
-        if not all_predictions:
-            for u in users:
-                p_name = u.get("username") or u.get("name") or u.get("email", "Participant").split("@")[0]
-                p_pred = u.get("predicted_score") or u.get("prediction") or "—"
-                all_predictions.append({"name": p_name, "pred": p_pred, "status": "pending"})
+        # Build cleanly aligned matrix table grid if entries exist
+        if all_predictions:
+            pred_lines = [
+                "",
+                f"All Predictions ({len(all_predictions)} participants):",
+                f"{'-'*24}-+-{'-'*7}",
+                f"{'Participant Name':<24} | {'Predict':<7}",
+                f"{'-'*24}-+-{'-'*7}"
+            ]
+            for p in all_predictions:
+                name = p['name'] or "User"
+                if len(name) > 22:
+                    name = name[:21] + "…"
+                pred_lines.append(f"• {name:<22} | {p['pred']:<7}")
+            pred_lines.append(f"{'-'*24}-+-{'-'*7}")
+            all_participants_block = "\n".join(pred_lines)
 
-        # Structure display plain-text layout grid
-        pred_lines = [
-            "",
-            f"All Predictions ({len(all_predictions)} participants):",
-            f"{'-'*24}-+-{'-'*7}",
-            f"{'Participant Name':<24} | {'Predict':<7}",
-            f"{'-'*24}-+-{'-'*7}"
-        ]
-        for p in all_predictions:
-            name = p['name']
-            if len(name) > 22:
-                name = name[:21] + "…"
-            pred_lines.append(f"• {name:<22} | {p['pred']:<7}")
-        pred_lines.append(f"{'-'*24}-+-{'-'*7}")
-        all_participants_block = "\n".join(pred_lines)
-
-    # Dispatch loops
+    # Core execution dispatch loop
     for user in users:
         try:
             current_email = user["email"]
@@ -153,7 +130,7 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                 if f"Hi {user_name}" in clean_body:
                     clean_body = clean_body.replace(f"Hi {user_name},", "").strip()
                 
-                # Prevent any double footers from merging
+                # Trim old static footers to prevent messy duplications
                 clean_body = clean_body.split("Check the leaderboard:")[0].split("Good luck!")[0].strip()
 
                 final_body = f"""Hi {user_name},
