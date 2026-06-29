@@ -40,147 +40,102 @@ def send_email(recipient: str, subject: str, body: str, attachments: list[str] |
 
 
 def send_report_emails(db, users: list[dict], subject: str, body: str, attachments: list[str]) -> dict:
-    """
-    Intercepts the generic single-user body text, extracts the active match names,
-    queries the database for ALL participant predictions for that specific game,
-    and builds a beautiful, complete summary matrix for every recipient.
-    """
     sent = skipped = failed = 0
     details = []
 
-    # 1. PARSE THE MATCH DETAILS DIRECTLY FROM THE INCOMING BODY STRING
-    home_team = "Unknown"
-    away_team = "Unknown"
-    
-    # Extract match line (e.g., "Match: Netherlands vs Morocco (result pending)")
-    match_line_match = re.search(r"Match:\s*([^\n\(\\r]+)", body, re.IGNORECASE)
-    if match_line_match:
-        match_text = match_line_match.group(1).strip()
-        if "vs" in match_text:
-            teams = match_text.split("vs")
-            home_team = teams[0].strip()
-            away_team = teams[1].strip()
+    # 1. CHECK IF THIS IS A MATCH UPDATE OR A FINANCIAL REPLAY
+    # If it's a match prediction update, we dynamically extract the teams to build the live grid
+    is_match_prediction = "prediction" in body.lower() or "result pending" in body.lower()
+    all_participants_block = ""
 
-    # 2. QUERY THE DATABASE TO FIND ALL PARTICIPANTS FOR THIS EXACT MATCH
-    all_predictions = []
-    game_no = "N/A"
-    venue = "Tournament Stadium"
-    kickoff = "Scheduled"
-    final_score = "Pending"
+    if is_match_prediction:
+        home_team, away_team = "Unknown", "Unknown"
+        match_line_match = re.search(r"Match:\s*([^\n\(\\r]+)", body, re.IGNORECASE)
+        if match_line_match:
+            match_text = match_line_match.group(1).strip()
+            if "vs" in match_text:
+                teams = match_text.split("vs")
+                home_team = teams[0].strip()
+                away_team = teams[1].strip()
 
-    try:
-        # Pulls every prediction line associated with either the game tokens or the teams
-        cursor = db.execute(
-            """
-            SELECT p.user_name, p.predicted_score, p.status, g.game_no, g.venue, g.kickoff, g.final_score
-            FROM predictions p
-            JOIN games g ON p.game_id = g.id
-            WHERE (g.home_team LIKE ? AND g.away_team LIKE ?)
-               OR (g.match_name LIKE ? AND g.match_name LIKE ?)
-            """,
-            (f"%{home_team}%", f"%{away_team}%", f"%{home_team}%", f"%{away_team}%")
-        )
-        rows = cursor.fetchall()
-        
-        if rows:
-            game_no = rows[0][3] or game_no
-            venue = rows[0][4] or venue
-            kickoff = rows[0][5] or kickoff
-            final_score = rows[0][6] or final_score
-            
+        # Fetch all entries for this specific match from the database
+        all_predictions = []
+        try:
+            cursor = db.execute(
+                """
+                SELECT p.user_name, p.predicted_score, p.status 
+                FROM predictions p
+                JOIN games g ON p.game_id = g.id
+                WHERE (g.home_team LIKE ? AND g.away_team LIKE ?)
+                   OR (g.match_name LIKE ? AND g.match_name LIKE ?)
+                """,
+                (f"%{home_team}%", f"%{away_team}%", f"%{home_team}%", f"%{away_team}%")
+            )
+            rows = cursor.fetchall()
             for r in rows:
-                all_predictions.append({
-                    "player_name": r[0],
-                    "prediction": r[1],
-                    "status": r[2] or "pending"
-                })
-    except Exception as db_err:
-        print(f"Database lookup skipped or modified: {db_err}")
+                all_predictions.append({"name": r[0], "pred": r[1], "status": r[2] or "pending"})
+        except Exception:
+            pass
 
-    # Fallback: If your schema differs, dynamically build the grid from the live users list
-    if not all_predictions:
-        for u in users:
-            # Try to grab username/name or clean the email prefix
-            p_name = u.get("username") or u.get("name") or u.get("email", "Participant").split("@")[0]
-            p_pred = u.get("predicted_score") or u.get("prediction", "—")
-            all_predictions.append({
-                "player_name": p_name,
-                "prediction": p_pred,
-                "status": "pending"
-            })
+        # If the lookup table is empty, fall back to using the active list of email recipients
+        if not all_predictions:
+            for u in users:
+                p_name = u.get("username") or u.get("name") or u.get("email", "Participant").split("@")[0]
+                p_pred = u.get("predicted_score") or u.get("prediction") or "—"
+                all_predictions.append({"name": p_name, "pred": p_pred, "status": "pending"})
 
-    # 3. CONSTRUCT A BALANCED, CLEAN ALIGNED TEXT GRID FOR MOBILE/DESKTOP
-    pred_lines = [
-        f"{'Participant Name':<24} | {'Predict':<7} | {'Status':<10}",
-        f"{'-'*24}-+-{'-'*7}-+-{'-'*10}"
-    ]
-    for p in all_predictions:
-        name = p['player_name']
-        if len(name) > 22:
-            name = name[:21] + "…"
-        pred_lines.append(f"• {name:<22} | {p['prediction']:<7} | {p['status'].lower():<10}")
-    
-    all_participants_block = "\n".join(pred_lines)
+        # Build a cleanly aligned plain-text matrix table
+        pred_lines = [
+            "",
+            f"All Predictions ({len(all_predictions)} participants):",
+            f"{'-'*24}-+-{'-'*7}-+-{'-'*10}"
+        ]
+        for p in all_predictions:
+            name = p['name']
+            if len(name) > 22:
+                name = name[:21] + "…"
+            pred_lines.append(f"  • {name:<22}   {p['pred']:<6}   {p['status'].lower():<10}")
+        
+        all_participants_block = "\n".join(pred_lines)
 
-    # 4. LOOP AND DISPATCH PERSONALIZED OVERVIEWS TO EACH PARTICIPANT
+    # 2. DISPATCH LOOPS
     for user in users:
         try:
-            # Extract user attributes or apply safe fallbacks
-            user_email = user.get("email")
-            user_name = user.get("username") or user.get("name") or user_email.split("@")[0]
-            user_pred = user.get("predicted_score") or user.get("prediction", "—")
-            user_pts  = user.get("points_awarded", 0)
-            score_status = "Pending"
+            current_email = user["email"]
+            
+            # If it's a match prediction, customize the personalized body with the full participant table
+            if is_match_prediction:
+                user_name = user.get("username") or user.get("name") or current_email.split("@")[0]
+                user_pred = user.get("predicted_score") or user.get("prediction") or "—"
+                user_pts  = user.get("points_awarded", 0)
+                
+                # Re-synthesize a dynamic template matching your exact text look
+                final_body = f"""Hi {user_name},
 
-            # Re-compile into the clean, multi-participant block format
-            personalized_body = f"""Hi {user_name},
+{body.strip()}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏆 WORLD CUP 2026 — PREDICTION STATUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Match: {home_team} vs {away_team} ({score_status.lower()})
-
-📊 YOUR ENTRY DETAILS:
-──────────────────────────────────────────────────
-  • Your Prediction : {user_pred}
-  • Points Awarded  : {user_pts}
-  • Match Result    : {score_status}
-
-📍 FIXTURE DETAILS:
-──────────────────────────────────────────────────
-  • Game No   : {game_no}
-  • Venue     : {venue}
-  • Kickoff   : {kickoff}
-  • Score     : {final_score}
-
-👥 TOURNAMENT MATRIX ({len(all_predictions)} Participants):
-──────────────────────────────────────────────────
 {all_participants_block}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Check the leaderboard live: https://worldcup-lv.onrender.com
-
 Good luck!
-WorldCup Prediction Team
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+WorldCup Prediction Team"""
+            else:
+                # If it's your payment report sheet table, keep it exactly as-is!
+                final_body = body
 
-            # 5. Send message and log notification state history
-            status = send_email(user_email, subject, personalized_body, attachments)
-            queue_notification(db, user_email, subject, personalized_body, user.get("id"))
+            status = send_email(current_email, subject, final_body, attachments)
+            queue_notification(db, current_email, subject, final_body, user.get("id"))
             
             db.execute(
                 "UPDATE notifications SET status = ? WHERE id = (SELECT MAX(id) FROM notifications WHERE recipient = ?)",
-                (status, user_email),
+                (status, current_email),
             )
             if status == "sent":
                 sent += 1
             else:
                 skipped += 1
-            details.append({"email": user_email, "status": status})
-            
+            details.append({"email": current_email, "status": status})
         except Exception as exc:
             failed += 1
-            details.append({"email": user.get("email"), "status": "failed", "error": str(exc)})
+            details.append({"email": user.get("email", "unknown"), "status": "failed", "error": str(exc)})
             
     return {"sent": sent, "skipped": skipped, "failed": failed, "details": details}
