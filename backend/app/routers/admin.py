@@ -588,3 +588,47 @@ def delete_tbd_matches(tournament_id: int, admin: dict = Depends(admin_user)):
             "message": f"Successfully dropped {len(match_ids)} TBD/Bracket placeholders.",
             "deleted_count": len(match_ids)
         }
+
+# ── PURGE TBD SCHEDULED GAMES ─────────────────────────────────────────────────
+@router.delete("/reset/tbd-matches/{tournament_id}")
+def purge_tbd_matches(tournament_id: int, admin: dict = Depends(admin_user)):
+    """
+    Finds and completely removes any match schedules that contain TBD teams
+    (e.g., 'TBD (R32-1 Home)') to clean up tournament brackets.
+    """
+    with get_db() as db:
+        # 1. Fetch the match IDs matching the tournament and TBD names
+        tbd_rows = rows(db.execute(
+            """
+            SELECT m.id 
+            FROM matches m
+            JOIN teams ht ON ht.id = m.home_team_id
+            JOIN teams at ON at.id = m.away_team_id
+            WHERE m.tournament_id = ? 
+              AND (ht.name LIKE 'TBD%' OR at.name LIKE 'TBD%')
+            """, (tournament_id,)
+        ))
+        
+        if not tbd_rows:
+            return {
+                "status": "success",
+                "message": "No TBD match configurations found for this tournament.",
+                "deleted_count": 0
+            }
+            
+        match_ids = [r["id"] for r in tbd_rows]
+        placeholders = ",".join("?" for _ in match_ids)
+        match_params = tuple(match_ids)
+        
+        # 2. Safely clear child tables to handle database constraints
+        db.execute(f"DELETE FROM predictions WHERE match_id IN ({placeholders})", match_params)
+        db.execute(f"DELETE FROM match_history WHERE match_id IN ({placeholders})", match_params)
+        
+        # 3. Drop the matches
+        db.execute(f"DELETE FROM matches WHERE id IN ({placeholders})", match_params)
+        
+        return {
+            "status": "success",
+            "message": f"Successfully stripped {len(match_ids)} TBD/Bracket games from the schedule.",
+            "deleted_count": len(match_ids)
+        }
