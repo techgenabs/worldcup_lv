@@ -56,7 +56,7 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
     sent = skipped = failed = 0
     details = []
 
-    # Check if this email relates to a match notification
+    # Check if this email relates to a match prediction
     is_match_prediction = "vs" in body.lower()
     all_participants_block = ""
 
@@ -83,7 +83,7 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                 # Query matches exactly against your real verified database columns
                 cursor = active_conn.execute(
                     """
-                    SELECT u.username, p.predicted_home_score, p.predicted_away_score
+                    SELECT u.name, p.predicted_home_score, p.predicted_away_score
                     FROM predictions p
                     JOIN users u ON p.user_id = u.id
                     JOIN matches m ON p.match_id = m.id
@@ -94,6 +94,20 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                     (f"%{home_team}%", f"%{away_team}%")
                 )
                 rows = cursor.fetchall()
+                
+                # Fallback: If parsing team names fails, pull predictions using the current batch's match context
+                if not rows and users and "match_id" in users[0]:
+                    cursor = active_conn.execute(
+                        """
+                        SELECT u.name, p.predicted_home_score, p.predicted_away_score
+                        FROM predictions p
+                        JOIN users u ON p.user_id = u.id
+                        WHERE p.match_id = ?
+                        """,
+                        (users[0]["match_id"],)
+                    )
+                    rows = cursor.fetchall()
+
                 for r in rows:
                     pred_score = f"{r[1]} - {r[2]}" if r[1] is not None and r[2] is not None else "—"
                     all_predictions.append({"name": r[0], "pred": pred_score})
@@ -101,6 +115,13 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                 pass
             finally:
                 active_conn.close()
+
+        # Fallback to current memory payload array if rows are missing
+        if not all_predictions:
+            for u in users:
+                p_name = u.get("name") or u.get("username") or u.get("email", "Participant").split("@")[0]
+                p_pred = u.get("predicted_score") or u.get("prediction") or "—"
+                all_predictions.append({"name": p_name, "pred": p_pred})
 
         # Build cleanly aligned matrix table grid if entries exist
         if all_predictions:
@@ -112,10 +133,10 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                 f"{'-'*24}-+-{'-'*7}"
             ]
             for p in all_predictions:
-                name = p['name'] or "User"
-                if len(name) > 22:
-                    name = name[:21] + "…"
-                pred_lines.append(f"• {name:<22} | {p['pred']:<7}")
+                display_name = p['name'] or "User"
+                if len(display_name) > 22:
+                    display_name = display_name[:21] + "…"
+                pred_lines.append(f"• {display_name:<22} | {p['pred']:<7}")
             pred_lines.append(f"{'-'*24}-+-{'-'*7}")
             all_participants_block = "\n".join(pred_lines)
 
@@ -123,7 +144,7 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
     for user in users:
         try:
             current_email = user["email"]
-            user_name = user.get("username") or user.get("name") or current_email.split("@")[0]
+            user_name = user.get("name") or user.get("username") or current_email.split("@")[0]
             
             if is_match_prediction:
                 clean_body = body.strip()
