@@ -43,22 +43,25 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
     sent = skipped = failed = 0
     details = []
 
-    # 1. CHECK IF THIS IS A MATCH UPDATE OR A FINANCIAL REPLAY
-    # If it's a match prediction update, we dynamically extract the teams to build the live grid
-    is_match_prediction = "prediction" in body.lower() or "result pending" in body.lower()
+    # 1. FORCE THE MATCH CHECK BY DETECTING THE "Match:" LABEL DIRECTLY
+    is_match_prediction = "Match:" in body or "prediction" in body.lower()
     all_participants_block = ""
 
     if is_match_prediction:
         home_team, away_team = "Unknown", "Unknown"
-        match_line_match = re.search(r"Match:\s*([^\n\(\\r]+)", body, re.IGNORECASE)
+        
+        # Robust parsing to extract the clean match name line
+        match_line_match = re.search(r"Match:\s*([^\n\(\\r\:]+)", body, re.IGNORECASE)
         if match_line_match:
             match_text = match_line_match.group(1).strip()
+            # Clean up trailing words like "(result pending)" or "Pending"
+            match_text = match_text.split("(")[0].split("result")[0].strip()
             if "vs" in match_text:
                 teams = match_text.split("vs")
                 home_team = teams[0].strip()
                 away_team = teams[1].strip()
 
-        # Fetch all entries for this specific match from the database
+        # Fetch all participant prediction entries for this specific fixture from the DB
         all_predictions = []
         try:
             cursor = db.execute(
@@ -77,39 +80,36 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
         except Exception:
             pass
 
-        # If the lookup table is empty, fall back to using the active list of email recipients
+        # Fallback: If database fails or is empty, use the active recipient queue data
         if not all_predictions:
             for u in users:
                 p_name = u.get("username") or u.get("name") or u.get("email", "Participant").split("@")[0]
                 p_pred = u.get("predicted_score") or u.get("prediction") or "—"
                 all_predictions.append({"name": p_name, "pred": p_pred, "status": "pending"})
 
-        # Build a cleanly aligned plain-text matrix table
+        # Construct the beautifully aligned plain-text matrix grid table
         pred_lines = [
             "",
             f"All Predictions ({len(all_predictions)} participants):",
-            f"{'-'*24}-+-{'-'*7}-+-{'-'*10}"
+            ""
         ]
         for p in all_predictions:
             name = p['name']
             if len(name) > 22:
                 name = name[:21] + "…"
-            pred_lines.append(f"  • {name:<22}   {p['pred']:<6}   {p['status'].lower():<10}")
+            pred_lines.append(f"  • {name:<22}   {p['pred']:<6}   {p['status'].lower()}")
         
         all_participants_block = "\n".join(pred_lines)
 
-    # 2. DISPATCH LOOPS
+    # 2. DISPATCH EMAIL QUEUE LOOPS
     for user in users:
         try:
             current_email = user["email"]
             
-            # If it's a match prediction, customize the personalized body with the full participant table
             if is_match_prediction:
                 user_name = user.get("username") or user.get("name") or current_email.split("@")[0]
-                user_pred = user.get("predicted_score") or user.get("prediction") or "—"
-                user_pts  = user.get("points_awarded", 0)
                 
-                # Re-synthesize a dynamic template matching your exact text look
+                # Assemble the finalized dynamic template matching your exact text pattern
                 final_body = f"""Hi {user_name},
 
 {body.strip()}
@@ -119,7 +119,7 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
 Good luck!
 WorldCup Prediction Team"""
             else:
-                # If it's your payment report sheet table, keep it exactly as-is!
+                # If this is your financial/payment report overview, keep it exactly as-is!
                 final_body = body
 
             status = send_email(current_email, subject, final_body, attachments)
