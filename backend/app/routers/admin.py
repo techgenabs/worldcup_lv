@@ -555,3 +555,36 @@ def generate_exports(tournament_id: int, admin: dict = Depends(admin_user)):
             }
         except Exception as e:
             return {"status": "error", "detail": str(e)}
+
+
+# ── DELETE TBD FIXTURES ONLY ──────────────────────────────────────────────────
+@router.delete("/reset/tbd-matches/{tournament_id}")
+def delete_tbd_matches(tournament_id: int, admin: dict = Depends(admin_user)):
+    """Removes all knockout/placeholder matches containing TBD structures for a tournament."""
+    with get_db() as db:
+        # Fetch targets first to clear cascade data safely
+        tbd_match_rows = rows(db.execute(
+            """
+            SELECT m.id FROM matches m
+            JOIN teams ht ON ht.id = m.home_team_id
+            JOIN teams at ON at.id = m.away_team_id
+            WHERE m.tournament_id = ? AND (ht.name LIKE 'TBD%' OR at.name LIKE 'TBD%')
+            """, (tournament_id,)
+        ))
+        
+        if not tbd_match_rows:
+            return {"message": "No TBD matches found for this tournament.", "deleted": 0}
+            
+        match_ids = [r["id"] for r in tbd_match_rows]
+        placeholders = ",".join("?" for _ in match_ids)
+        
+        # Safe structural deletion execution loop
+        db.execute(f"DELETE FROM predictions WHERE match_id IN ({placeholders})", tuple(match_ids))
+        db.execute(f"DELETE FROM match_history WHERE match_id IN ({placeholders})", tuple(match_ids))
+        db.execute(f"DELETE FROM matches WHERE id IN ({placeholders})", tuple(match_ids))
+        
+        return {
+            "status": "success",
+            "message": f"Successfully dropped {len(match_ids)} TBD/Bracket placeholders.",
+            "deleted_count": len(match_ids)
+        }
