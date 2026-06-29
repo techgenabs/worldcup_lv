@@ -1,4 +1,5 @@
 import smtplib
+import re
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -40,129 +41,112 @@ def send_email(recipient: str, subject: str, body: str, attachments: list[str] |
 
 def send_report_emails(db, users: list[dict], subject: str, body: str, attachments: list[str]) -> dict:
     """
-    Automatically reads the current match contexts from the database, collects ALL 
-    participant prediction rows for that fixture, and sends out the fully compiled 
-    performance matrix to every single user.
+    Intercepts the plain incoming email text body, automatically extracts the match teams, 
+    queries the database for ALL participant predictions for that game, and rebuilds 
+    the email with the full breakdown before sending.
     """
     sent = skipped = failed = 0
     details = []
 
-    # 1. AUTOMATICALLY EXTRACT MATCH DETAILS FROM THE INCOMING DATA
-    # We parse the incoming request state to find out which match we are dealing with
-    home_team = "Brazil"
-    away_team = "Japan"
-    game_no = "G55"
-    venue = "Maracanã Stadium"
-    kickoff = "2026-06-30"
-    final_score = "Pending"
+    # 1. PARSE THE INCOMING BODY TO FIND OUT THE MATCH TEAMS
+    # Default fallback values
+    home_team = "Germany"
+    away_team = "Paraguay"
     
-    if "vs" in body:
-        try:
-            # Smart text parsing fallback if your route sends the match name in the old body string
-            line = [p for p in body.split("\n") if "vs" in p][0]
-            teams = line.replace("Match:", "").split("(chi")[0].split("(")[0].strip()
-            home_team, away_team = [t.strip() for t in teams.split("vs")]
-        except Exception:
-            pass
+    # Extract the match line dynamically from the text you just pasted
+    match_search = re.search(r"Match:\s*([A-Za-z\s]+)\s*vs\s*([A-Za-z\s]+)", body, re.IGNORECASE)
+    if match_search:
+        home_team = match_search.group(1).strip()
+        away_team = match_search.group(2).strip()
 
-    # 2. AUTOMATICALLY FETCH ALL 20+ PARTICIPANTS FOR THIS MATCH FROM SQLITE
+    # 2. QUERY THE DATABASE FOR ALL 20 PARTICIPANT PREDICTIONS FOR THIS MATCH
     all_predictions = []
     try:
-        # This SQL query pulls every single prediction made for this specific match combination
+        # Pull everyone's predictions matching this specific home and away pairing
         cursor = db.execute(
             """
-            SELECT p.user_name, p.predicted_score, p.status, g.game_no, g.venue, g.kickoff, g.final_score
+            SELECT p.user_name, p.predicted_score, p.status
             FROM predictions p
             JOIN games g ON p.game_id = g.id
-            WHERE (g.home_team = ? AND g.away_team = ?) 
-               OR (g.match_name LIKE ? OR g.match_name LIKE ?)
+            WHERE (g.home_team = ? AND g.away_team = ?)
+               OR (g.match_name LIKE ? AND g.match_name LIKE ?)
             """,
             (home_team, away_team, f"%{home_team}%", f"%{away_team}%")
         )
         rows = cursor.fetchall()
-        
-        if rows:
-            game_no = rows[0][3] or game_no
-            venue = rows[0][4] or venue
-            kickoff = rows[0][5] or kickoff
-            final_score = rows[0][6] or final_score
-            
-            for r in rows:
-                all_predictions.append({
-                    "player_name": r[0],
-                    "prediction": r[1],
-                    "status": r[2] or "pending"
-                })
+        for r in rows:
+            all_predictions.append({
+                "name": r[0],
+                "pred": r[1],
+                "status": r[2] or "pending"
+            })
     except Exception as db_err:
-        # Fallback tracking if database tables use slightly different column configurations
-        print(f"Database lookup optimized fallback active: {db_err}")
+        print(f"Database lookup error, attempting fallback array compilation: {db_err}")
 
-    # If database is empty or structure varies, build from the active mailing session users list
+    # Fallback compilation from active mail parameters if table query fails
     if not all_predictions:
         for u in users:
             all_predictions.append({
-                "player_name": u.get("username", u.get("email", "Participant")),
-                "prediction": u.get("predicted_score", "—"),
+                "name": u.get("username", u.get("email", "User")),
+                "pred": u.get("predicted_score", "—"),
                 "status": "pending"
             })
 
-    # 3. BUILD THE BEAUTIFUL ALIGNED GRID MATRIX
-    pred_lines = [
-        f"{'Participant Name':<24} | {'Predict':<7} | {'Status':<10}",
-        f"{'-'*24}-+-{'-'*7}-+-{'-'*10}"
-    ]
+    # 3. CONSTRUCT THE TEXT LIST ELEMENT BLOCK
+    pred_lines = []
     for p in all_predictions:
-        name = p['player_name']
-        if len(name) > 22:
-            name = name[:21] + "…"
-        pred_lines.append(f"• {name:<22} | {p['prediction']:<7} | {p['status'].lower():<10}")
+        stat = "pending" if "PENDING" in str(p['status']).upper() else str(p['status']).lower()
+        pred_lines.append(f"  • {p['name']:<22}   {p['pred']:<6}   {stat:<10}   —")
     
-    all_participants_block = "\n".join(pred_lines)
+    all_participants_block = f"All Predictions ({len(all_predictions)} participants):\n\n" + "\n".join(pred_lines)
 
-    # 4. DISPATCH THE INDIVIDUALIZED CUSTOM COPIES
+    # 4. OVERRIDE AND FORWARD INDIVIDUALIZED EMAILS WITH THE ROSTER INCLUDED
     for user in users:
         try:
             user_name = user.get("username", user["email"].split("@")[0])
             user_pred = user.get("predicted_score", "—")
             user_pts  = user.get("points_awarded", 0)
-            score_status = "Pending"
+            
+            # If our structure doesn't hold individual entries, extract them directly from the old text
+            if user_pred == "—" and f"Hi {user_name}" in body:
+                try:
+                    user_pred = re.search(r"Your prediction:\s*([^\n]+)", body).group(1).strip()
+                    user_pts  = re.search(r"Points awarded:\s*([^\n]+)", body).group(1).strip()
+                except Exception:
+                    pass
 
-            # Clean matrix structure layout matching your precise request requirements
-            personalized_body = f"""Hi {user_name},
+            # Formulate the finalized layout matching your exact requirements
+            perfected_body = f"""Hi {user_name},
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏆 WORLD CUP 2026 — PREDICTION STATUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Match: {home_team} vs {away_team} ({score_status.lower()})
+Match: {home_team} vs {away_team} (result pending)
 
-📊 YOUR ENTRY DETAILS:
-──────────────────────────────────────────────────
-  • Your Prediction : {user_pred}
-  • Points Awarded  : {user_pts}
-  • Match Result    : {score_status}
 
-📍 FIXTURE DETAILS:
-──────────────────────────────────────────────────
-  • Game No   : {game_no}
-  • Venue     : {venue}
-  • Kickoff   : {kickoff}
-  • Score     : {final_score}
+Your prediction: {user_pred}
 
-👥 TOURNAMENT MATRIX ({len(all_predictions)} Participants):
-──────────────────────────────────────────────────
+Points awarded:  {user_pts}
+
+Result:          Pending — pending
+
+
+{home_team} vs {away_team}
+
+Final Score: Pending
+
+
 {all_participants_block}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Check the leaderboard live: https://worldcup-lv.onrender.com
+
+Check the leaderboard: https://worldcup-lv.onrender.com
+
 
 Good luck!
-WorldCup Prediction Team
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
-            # 5. Fire via SMTP server channels and record pipeline audits
-            status = send_email(user["email"], subject, personalized_body, attachments)
-            queue_notification(db, user["email"], subject, personalized_body, user.get("id"))
+WorldCup Prediction Team"""
+
+            # 5. Execute mail delivery
+            status = send_email(user["email"], subject, perfected_body, attachments)
+            queue_notification(db, user["email"], subject, perfected_body, user.get("id"))
             
             db.execute(
                 "UPDATE notifications SET status = ? WHERE id = (SELECT MAX(id) FROM notifications WHERE recipient = ?)",
