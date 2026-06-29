@@ -43,42 +43,48 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
     sent = skipped = failed = 0
     details = []
 
-    # 1. FORCE THE MATCH CHECK BY DETECTING THE "Match:" LABEL DIRECTLY
-    is_match_prediction = "Match:" in body or "prediction" in body.lower()
+    # 1. BULLETPROOF DETECTION: If the text contains "vs" or "VS", it's a match notification!
+    is_match_prediction = "vs" in body.lower()
     all_participants_block = ""
 
     if is_match_prediction:
         home_team, away_team = "Unknown", "Unknown"
         
-        # Robust parsing to extract the clean match name line
-        match_line_match = re.search(r"Match:\s*([^\n\(\\r\:]+)", body, re.IGNORECASE)
-        if match_line_match:
-            match_text = match_line_match.group(1).strip()
-            # Clean up trailing words like "(result pending)" or "Pending"
-            match_text = match_text.split("(")[0].split("result")[0].strip()
-            if "vs" in match_text:
-                teams = match_text.split("vs")
-                home_team = teams[0].strip()
-                away_team = teams[1].strip()
+        # Look for any line containing "vs" or "VS" to find the teams
+        for line in body.splitlines():
+            if "vs" in line.lower():
+                # Clean up prefixes like "Match:" or "Hi absingh," if they are on the same line
+                clean_line = re.sub(r"(match|hi|hello|dear)[^:]*:\s*", "", line, flags=re.IGNORECASE)
+                # Clean up trailing notes like "(result pending)"
+                clean_line = clean_line.split("(")[0].split("result")[0].strip()
+                
+                if "vs" in clean_line.lower():
+                    # Split by "vs" ignoring case
+                    teams = re.split(r"\s+vs\s+", clean_line, flags=re.IGNORECASE)
+                    if len(teams) >= 2:
+                        home_team = teams[0].strip()
+                        away_team = teams[1].strip()
+                        break
 
         # Fetch all participant prediction entries for this specific fixture from the DB
         all_predictions = []
-        try:
-            cursor = db.execute(
-                """
-                SELECT p.user_name, p.predicted_score, p.status 
-                FROM predictions p
-                JOIN games g ON p.game_id = g.id
-                WHERE (g.home_team LIKE ? AND g.away_team LIKE ?)
-                   OR (g.match_name LIKE ? AND g.match_name LIKE ?)
-                """,
-                (f"%{home_team}%", f"%{away_team}%", f"%{home_team}%", f"%{away_team}%")
-            )
-            rows = cursor.fetchall()
-            for r in rows:
-                all_predictions.append({"name": r[0], "pred": r[1], "status": r[2] or "pending"})
-        except Exception:
-            pass
+        if home_team != "Unknown":
+            try:
+                cursor = db.execute(
+                    """
+                    SELECT p.user_name, p.predicted_score, p.status 
+                    FROM predictions p
+                    JOIN games g ON p.game_id = g.id
+                    WHERE (g.home_team LIKE ? AND g.away_team LIKE ?)
+                       OR (g.match_name LIKE ? AND g.match_name LIKE ?)
+                    """,
+                    (f"%{home_team}%", f"%{away_team}%", f"%{home_team}%", f"%{away_team}%")
+                )
+                rows = cursor.fetchall()
+                for r in rows:
+                    all_predictions.append({"name": r[0], "pred": r[1], "status": r[2] or "pending"})
+            except Exception:
+                pass
 
         # Fallback: If database fails or is empty, use the active recipient queue data
         if not all_predictions:
@@ -87,7 +93,7 @@ def send_report_emails(db, users: list[dict], subject: str, body: str, attachmen
                 p_pred = u.get("predicted_score") or u.get("prediction") or "—"
                 all_predictions.append({"name": p_name, "pred": p_pred, "status": "pending"})
 
-        # Construct the beautifully aligned plain-text matrix grid table
+        # Construct the cleanly aligned plain-text matrix grid table
         pred_lines = [
             "",
             f"All Predictions ({len(all_predictions)} participants):",
