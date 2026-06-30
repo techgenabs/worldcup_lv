@@ -48,68 +48,24 @@ def is_prediction_locked(match: dict) -> bool:
     return datetime.now(lock_at.tzinfo) >= lock_at
 
 
-def confidence_bonus(level: str | None, base_points: int) -> int:
-    if (level or "").lower() == "high" and base_points > 0:
-        return 2
-    return 0
-
-
 def score_prediction(prediction: dict, match: dict) -> tuple[int, int, str]:
     ph = int(prediction.get("predicted_home_score") or 0)
     pa = int(prediction.get("predicted_away_score") or 0)
     hs = int(match.get("home_score") or 0)
     away_score = int(match.get("away_score") or 0)
-    pred_delta = ph - pa
-    actual_delta = hs - away_score
-    exact = ph == hs and pa == away_score
-
-    # ── STRICT RULE (current): ONLY an exact score match earns points. ──
-    # Anything else — correct winner, correct draw, correct goal difference,
-    # or a wrong prediction — scores ZERO. This matches the finance rule:
-    # if nobody hits the exact score, the game is cancelled and no fee is
-    # collected, so partial credit here would contradict that rule.
-    if exact:
-        base, reason = 10, "Exact Score"
-    else:
-        base, reason = 0, "Wrong Prediction"
-
-    # ── OLD TIERED RULE (kept for reference / easy revert) ──────────────────
-    # Uncomment the block below and remove the strict if/else above to
-    # restore partial credit for correct winner / correct draw / goal
-    # difference predictions instead of all-or-nothing scoring.
-    #
-    # if exact:
-    #     base, reason = 10, "Exact Score"
-    # elif pred_delta == actual_delta and pred_delta != 0:
-    #     base, reason = 7, "Correct Winner + Goal Difference"
-    # elif pred_delta == 0 and actual_delta == 0:
-    #     base, reason = 5, "Correct Draw"
-    # elif (pred_delta > 0 and actual_delta > 0) or (pred_delta < 0 and actual_delta < 0):
-    #     base, reason = 5, "Correct Winner"
-    # else:
-    #     base, reason = 0, "Wrong Prediction"
-
-    # ── Confidence bonus DISABLED ─────────────────────────────────────────────
-    # Previously, "High Confidence" predictions earned +2 bonus points, which
-    # would make an exact-score prediction worth 12 instead of 10. Since the
-    # finance/winner rule checks for points == 10 exactly, the bonus is now
-    # turned off so an Exact Score is always exactly 10 points, never more.
-    # To re-enable: uncomment the two lines below.
-    #
-    # bonus = confidence_bonus(prediction.get("confidence_level"), base)
-    # if bonus:
-    #     reason = f"{reason} + High Confidence Bonus"
-    bonus = 0
-
-    return base + bonus, 1 if base else 0, reason
+    
+    # STRICT RULE: ONLY an exact score match earns points (10 pts).
+    # Anything else scores zero points.
+    if ph == hs and pa == away_score:
+        return 10, 1, "Exact Score"
+    
+    return 0, 0, "Wrong Prediction"
 
 
 def lock_due_predictions(db) -> int:
     """
-    Uses the standard db.execute(sql, params) interface — works on both
-    SQLite and Postgres because PgWrapper auto-converts '?' placeholders
-    and dict-row access transparently. Do NOT bypass this with raw
-    psycopg2 cursors; it breaks the abstraction database.py provides.
+    Locks up predictions whose match deadline has passed, and handles re-opening 
+    if timelines shift.
     """
     reopen = rows(db.execute(
         "SELECT * FROM matches WHERE status = 'locked' AND match_date IS NOT NULL AND predictions_open = 1"
@@ -183,18 +139,14 @@ def calculate_match_points(db, match_id: int) -> int:
         )
         updated += 1
 
-    # Scope leaderboard rebuild to just this match's tournament, so completing
-    # a game in one tournament doesn't recompute/mix rankings across tournaments.
     update_leaderboard(db, tournament_id=match.get("tournament_id"))
     return updated
 
 
 def update_leaderboard(db, season: str = "2026", tournament_id: int | None = None) -> list[dict]:
     """
-    Rebuilds the leaderboard. If tournament_id is given, only points scored
-    on matches belonging to that tournament are counted — this is what makes
-    the leaderboard correctly separate "FIFA World Cup 2026" from any other
-    tournament (e.g. "my test fifa") instead of mixing everyone's totals.
+    Rebuilds the leaderboard. Accurately calculates true match outcome winners 
+    for user metrics, completely independent of the 10-point rule.
     """
     users = rows(db.execute(
         "SELECT id, name FROM users WHERE role = ? AND is_active = ?",
@@ -208,7 +160,10 @@ def update_leaderboard(db, season: str = "2026", tournament_id: int | None = Non
                 """
                 SELECT COALESCE(SUM(p.points_awarded), 0) AS total_points,
                        SUM(CASE WHEN p.scoring_reason LIKE ? THEN 1 ELSE 0 END) AS exact_matches,
-                       SUM(CASE WHEN p.is_correct = 1 THEN 1 ELSE 0 END) AS winner_count,
+                       SUM(CASE WHEN (p.predicted_home_score - p.predicted_away_score) > 0 AND (m.home_score - m.away_score) > 0 THEN 1
+                                WHEN (p.predicted_home_score - p.predicted_away_score) < 0 AND (m.home_score - m.away_score) < 0 THEN 1
+                                WHEN (p.predicted_home_score - p.predicted_away_score) = 0 AND (m.home_score - m.away_score) = 0 THEN 1
+                                ELSE 0 END) AS winner_count,
                        COUNT(*) AS predictions_count
                 FROM predictions p
                 JOIN matches m ON m.id = p.match_id
@@ -219,12 +174,15 @@ def update_leaderboard(db, season: str = "2026", tournament_id: int | None = Non
         else:
             stats = row(db.execute(
                 """
-                SELECT COALESCE(SUM(points_awarded), 0) AS total_points,
-                       SUM(CASE WHEN scoring_reason LIKE ? THEN 1 ELSE 0 END) AS exact_matches,
-                       SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) AS winner_count,
-                       COUNT(*) AS predictions_count
-                FROM predictions
-                WHERE user_id = ? AND scored_at IS NOT NULL
+                SELECT COALESCE(SUM(p.points_awarded), 0) AS total_points,
+                       SUM(CASE WHEN p.scoring_reason LIKE ? THEN 1 ELSE 0 END) AS exact_matches,
+                       SUM(CASE WHEN (p.predicted_home_score - p.predicted_away_score) > 0 AND (m.home_score - m.away_score) > 0 THEN 1
+                                WHEN (p.predicted_home_score - p.predicted_away_score) < 0 AND (m.home_score - m.away_score) < 0 THEN 1
+                                WHEN (p.predicted_home_score - p.predicted_away_score) = 0 AND (m.home_score - m.away_score) = 0 THEN 1
+                                ELSE 0 END) AS winner_count,
+                       FROM predictions p
+                       JOIN matches m ON m.id = p.match_id
+                       WHERE p.user_id = ? AND p.scored_at IS NOT NULL
                 """,
                 ("Exact Score%", user["id"])
             )) or {}
@@ -294,8 +252,6 @@ def complete_match_workflow(db, match_id: int) -> dict:
     count = calculate_match_points(db, match_id)
     match = row(db.execute("SELECT * FROM matches WHERE id = ?", (match_id,)))
 
-    # Scope the export to just this match's tournament, so completing a game
-    # in "my test fifa" doesn't generate reports mixed with "FIFA World Cup 2026".
     reports = export_reports(db, season="2026", tournament_id=match.get("tournament_id"))
 
     users = rows(db.execute("SELECT id, email FROM users WHERE is_active = ?", (1,)))
