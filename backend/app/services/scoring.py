@@ -47,34 +47,18 @@ def is_prediction_locked(match: dict) -> bool:
     return datetime.now(lock_at.tzinfo) >= lock_at
 
 
-def confidence_bonus(level: str | None, base_points: int) -> int:
-    if (level or "").lower() == "high" and base_points > 0:
-        return 2
-    return 0
-
-
 def score_prediction(prediction: dict, match: dict) -> tuple[int, int, str]:
     ph = int(prediction.get("predicted_home_score") or 0)
     pa = int(prediction.get("predicted_away_score") or 0)
     hs = int(match.get("home_score") or 0)
     away_score = int(match.get("away_score") or 0)
-    pred_delta = ph - pa
-    actual_delta = hs - away_score
-    exact = ph == hs and pa == away_score
-    if exact:
-        base, reason = 10, "Exact Score"
-    elif pred_delta == actual_delta and pred_delta != 0:
-        base, reason = 7, "Correct Winner + Goal Difference"
-    elif pred_delta == 0 and actual_delta == 0:
-        base, reason = 5, "Correct Draw"
-    elif (pred_delta > 0 and actual_delta > 0) or (pred_delta < 0 and actual_delta < 0):
-        base, reason = 5, "Correct Winner"
-    else:
-        base, reason = 0, "Wrong Prediction"
-    bonus = confidence_bonus(prediction.get("confidence_level"), base)
-    if bonus:
-        reason = f"{reason} + High Confidence Bonus"
-    return base + bonus, 1 if base else 0, reason
+    
+    # Check only for the Exact Score
+    if ph == hs and pa == away_score:
+        return 10, 1, "Exact Score"
+    
+    # All other outcomes get 0 points
+    return 0, 0, "Incorrect Score"
 
 
 def _pg_cursor(db):
