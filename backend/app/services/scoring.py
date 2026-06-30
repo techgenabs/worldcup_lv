@@ -2,7 +2,6 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from ..config import settings
-from ..database import rows, row
 from .emailer import queue_notification
 from .reports import export_reports
 
@@ -48,62 +47,104 @@ def is_prediction_locked(match: dict) -> bool:
     return datetime.now(lock_at.tzinfo) >= lock_at
 
 
+def confidence_bonus(level: str | None, base_points: int) -> int:
+    if (level or "").lower() == "high" and base_points > 0:
+        return 2
+    return 0
+
+
 def score_prediction(prediction: dict, match: dict) -> tuple[int, int, str]:
     ph = int(prediction.get("predicted_home_score") or 0)
     pa = int(prediction.get("predicted_away_score") or 0)
     hs = int(match.get("home_score") or 0)
     away_score = int(match.get("away_score") or 0)
-    
-    # STRICT RULE: ONLY an exact score match earns points (10 pts).
-    if ph == hs and pa == away_score:
-        return 10, 1, "Exact Score"
-    
-    return 0, 0, "Wrong Prediction"
+    pred_delta = ph - pa
+    actual_delta = hs - away_score
+    exact = ph == hs and pa == away_score
+    if exact:
+        base, reason = 10, "Exact Score"
+    elif pred_delta == actual_delta and pred_delta != 0:
+        base, reason = 7, "Correct Winner + Goal Difference"
+    elif pred_delta == 0 and actual_delta == 0:
+        base, reason = 5, "Correct Draw"
+    elif (pred_delta > 0 and actual_delta > 0) or (pred_delta < 0 and actual_delta < 0):
+        base, reason = 5, "Correct Winner"
+    else:
+        base, reason = 0, "Wrong Prediction"
+    bonus = confidence_bonus(prediction.get("confidence_level"), base)
+    if bonus:
+        reason = f"{reason} + High Confidence Bonus"
+    return base + bonus, 1 if base else 0, reason
+
+
+def _pg_cursor(db):
+    """Get raw psycopg2 cursor from PgWrapper."""
+    return db._conn.cursor()
+
+
+def _fetchall(cur) -> list[dict]:
+    if not cur.description:
+        return []
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _fetchone(cur) -> dict:
+    if not cur.description:
+        return {}
+    row = cur.fetchone()
+    if not row:
+        return {}
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
 
 
 def lock_due_predictions(db) -> int:
-    reopen = rows(db.execute(
-        "SELECT * FROM matches WHERE status = 'locked' AND match_date IS NOT NULL AND predictions_open = 1"
-    ))
+    cur = _pg_cursor(db)
+
+    cur.execute("""
+        SELECT * FROM matches
+        WHERE status = 'locked' AND match_date IS NOT NULL AND predictions_open = 1
+    """)
+    reopen = _fetchall(cur)
 
     for match in reopen:
         deadline = lock_deadline(match)
         if deadline and datetime.now(deadline.tzinfo) < deadline:
-            db.execute(
-                "UPDATE matches SET status = 'scheduled', locked_at = NULL WHERE id = ?",
+            cur.execute(
+                "UPDATE matches SET status = 'scheduled', locked_at = NULL WHERE id = %s",
                 (match["id"],)
             )
-            db.execute(
-                "UPDATE predictions SET locked_at = NULL WHERE match_id = ? AND scored_at IS NULL",
+            cur.execute(
+                "UPDATE predictions SET locked_at = NULL WHERE match_id = %s AND scored_at IS NULL",
                 (match["id"],)
             )
 
-    matches = rows(db.execute(
+    cur.execute(
         "SELECT * FROM matches WHERE status = 'scheduled' AND match_date IS NOT NULL"
-    ))
+    )
+    matches = _fetchall(cur)
 
     locked = 0
     for match in matches:
         if not is_prediction_locked(match):
             continue
         timestamp = now_iso()
-        db.execute(
-            "UPDATE matches SET status = 'locked', locked_at = COALESCE(locked_at, ?) WHERE id = ?",
+        cur.execute(
+            "UPDATE matches SET status = 'locked', locked_at = COALESCE(locked_at, %s) WHERE id = %s",
             (timestamp, match["id"])
         )
-        db.execute(
-            "UPDATE predictions SET locked_at = COALESCE(locked_at, ?) WHERE match_id = ?",
+        cur.execute(
+            "UPDATE predictions SET locked_at = COALESCE(locked_at, %s) WHERE match_id = %s",
             (timestamp, match["id"])
         )
-        users = rows(db.execute(
-            """
+        cur.execute("""
             SELECT u.id, u.email, p.predicted_home_score, p.predicted_away_score
             FROM predictions p
             JOIN users u ON u.id = p.user_id
-            WHERE p.match_id = ?
-            """,
-            (match["id"],)
-        ))
+            WHERE p.match_id = %s
+        """, (match["id"],))
+        users = _fetchall(cur)
         for item in users:
             queue_notification(
                 db,
@@ -117,67 +158,49 @@ def lock_due_predictions(db) -> int:
 
 
 def calculate_match_points(db, match_id: int) -> int:
-    match = row(db.execute("SELECT * FROM matches WHERE id = ?", (match_id,)))
-    predictions = rows(db.execute("SELECT * FROM predictions WHERE match_id = ?", (match_id,)))
+    cur = _pg_cursor(db)
+
+    cur.execute("SELECT * FROM matches WHERE id = %s", (match_id,))
+    match = _fetchone(cur)
+
+    cur.execute("SELECT * FROM predictions WHERE match_id = %s", (match_id,))
+    predictions = _fetchall(cur)
 
     updated = 0
     timestamp = now_iso()
     for prediction in predictions:
         points, correct, reason = score_prediction(prediction, match)
-        db.execute(
-            """
+        cur.execute("""
             UPDATE predictions
-            SET points_awarded = ?, is_correct = ?, scoring_reason = ?, scored_at = ?
-            WHERE id = ?
-            """,
-            (points, correct, reason, timestamp, prediction["id"])
-        )
+            SET points_awarded = %s, is_correct = %s, scoring_reason = %s, scored_at = %s
+            WHERE id = %s
+        """, (points, correct, reason, timestamp, prediction["id"]))
         updated += 1
 
-    update_leaderboard(db, tournament_id=match.get("tournament_id"))
+    update_leaderboard(db)
     return updated
 
 
-def update_leaderboard(db, season: str = "2026", tournament_id: int | None = None) -> list[dict]:
-    users = rows(db.execute(
-        "SELECT id, name FROM users WHERE role = ? AND is_active = ?",
-        ("user", 1)
-    ))
+def update_leaderboard(db, season: str = "2026") -> list[dict]:
+    cur = _pg_cursor(db)
+
+    cur.execute(
+        "SELECT id, name FROM users WHERE role = %s AND is_active = %s",
+        ('user', 1)
+    )
+    users = _fetchall(cur)
 
     result_rows = []
     for user in users:
-        if tournament_id:
-            stats = row(db.execute(
-                """
-                SELECT COALESCE(SUM(p.points_awarded), 0) AS total_points,
-                       SUM(CASE WHEN p.scoring_reason LIKE ? THEN 1 ELSE 0 END) AS exact_matches,
-                       SUM(CASE WHEN (p.predicted_home_score - p.predicted_away_score) > 0 AND (m.home_score - m.away_score) > 0 THEN 1
-                                WHEN (p.predicted_home_score - p.predicted_away_score) < 0 AND (m.home_score - m.away_score) < 0 THEN 1
-                                WHEN (p.predicted_home_score - p.predicted_away_score) = 0 AND (m.home_score - m.away_score) = 0 THEN 1
-                                ELSE 0 END) AS winner_count,
-                       COUNT(*) AS predictions_count
-                FROM predictions p
-                JOIN matches m ON m.id = p.match_id
-                WHERE p.user_id = ? AND p.scored_at IS NOT NULL AND m.tournament_id = ?
-                """,
-                ("Exact Score%", user["id"], tournament_id)
-            )) or {}
-        else:
-            stats = row(db.execute(
-                """
-                SELECT COALESCE(SUM(p.points_awarded), 0) AS total_points,
-                       SUM(CASE WHEN p.scoring_reason LIKE ? THEN 1 ELSE 0 END) AS exact_matches,
-                       SUM(CASE WHEN (p.predicted_home_score - p.predicted_away_score) > 0 AND (m.home_score - m.away_score) > 0 THEN 1
-                                WHEN (p.predicted_home_score - p.predicted_away_score) < 0 AND (m.home_score - m.away_score) < 0 THEN 1
-                                WHEN (p.predicted_home_score - p.predicted_away_score) = 0 AND (m.home_score - m.away_score) = 0 THEN 1
-                                ELSE 0 END) AS winner_count,
-                       COUNT(*) AS predictions_count
-                FROM predictions p
-                JOIN matches m ON m.id = p.match_id
-                WHERE p.user_id = ? AND p.scored_at IS NOT NULL
-                """,
-                ("Exact Score%", user["id"])
-            )) or {}
+        cur.execute("""
+            SELECT COALESCE(SUM(points_awarded), 0) AS total_points,
+                   SUM(CASE WHEN scoring_reason LIKE %s THEN 1 ELSE 0 END) AS exact_matches,
+                   SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) AS winner_count,
+                   COUNT(*) AS predictions_count
+            FROM predictions
+            WHERE user_id = %s AND scored_at IS NOT NULL
+        """, ('Exact Score%', user["id"]))
+        stats = _fetchone(cur)
 
         total_points = int(stats.get("total_points") or 0)
         exact_matches = int(stats.get("exact_matches") or 0)
@@ -211,29 +234,27 @@ def update_leaderboard(db, season: str = "2026", tournament_id: int | None = Non
         if item["exact_matches"] >= 3:
             badges.append("Champion Predictor")
 
-        db.execute(
-            """
+        cur.execute("""
             INSERT INTO leaderboards
                 (user_id, season, total_points, exact_matches, winner_count,
                  predictions_count, accuracy, rank, badges, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id, season)
-            DO UPDATE SET total_points = excluded.total_points,
-                          exact_matches = excluded.exact_matches,
-                          winner_count = excluded.winner_count,
-                          predictions_count = excluded.predictions_count,
-                          accuracy = excluded.accuracy,
-                          rank = excluded.rank,
-                          badges = excluded.badges,
-                          updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                item["user_id"], season,
-                item["total_points"], item["exact_matches"],
-                item["winner_count"], item["predictions_count"],
-                item["accuracy"], index, ", ".join(badges),
-            )
-        )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id, season) DO UPDATE
+                SET total_points      = EXCLUDED.total_points,
+                    exact_matches     = EXCLUDED.exact_matches,
+                    winner_count      = EXCLUDED.winner_count,
+                    predictions_count = EXCLUDED.predictions_count,
+                    accuracy          = EXCLUDED.accuracy,
+                    rank              = EXCLUDED.rank,
+                    badges            = EXCLUDED.badges,
+                    updated_at        = CURRENT_TIMESTAMP
+        """, (
+            item["user_id"], season,
+            item["total_points"], item["exact_matches"],
+            item["winner_count"], item["predictions_count"],
+            item["accuracy"], index, ", ".join(badges),
+        ))
+
         item["rank"] = index
         item["badges"] = badges
 
@@ -242,11 +263,15 @@ def update_leaderboard(db, season: str = "2026", tournament_id: int | None = Non
 
 def complete_match_workflow(db, match_id: int) -> dict:
     count = calculate_match_points(db, match_id)
-    match = row(db.execute("SELECT * FROM matches WHERE id = ?", (match_id,)))
+    reports = export_reports(db, season="2026")
 
-    reports = export_reports(db, season="2026", tournament_id=match.get("tournament_id"))
+    cur = _pg_cursor(db)
+    cur.execute("SELECT * FROM matches WHERE id = %s", (match_id,))
+    match = _fetchone(cur)
 
-    users = rows(db.execute("SELECT id, email FROM users WHERE is_active = ?", (1,)))
+    cur.execute("SELECT id, email FROM users WHERE is_active = %s", (1,))
+    users = _fetchall(cur)
+
     for user in users:
         queue_notification(
             db,
