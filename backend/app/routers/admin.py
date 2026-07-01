@@ -149,88 +149,27 @@ def analytics(admin: dict = Depends(admin_user)):
 
 # ── NOTIFY MATCH PARTICIPANTS ─────────────────────────────────────────────
 @router.post("/notify/match-participants/{match_id}")
-def notify_match_participants(match_id: int, admin: dict = Depends(admin_user)):
-    """Send email to all users who predicted this match."""
-    from ..services.emailer import send_email, queue_notification
+def notify_match_participants_endpoint(match_id: int, admin: dict = Depends(admin_user)):
+    """Send HTML group summary email to all users who predicted this match."""
+    from ..services.mailer import notify_match_participants
 
     with get_db() as db:
-        # Get match details
-        match = row(db.execute("""
-            SELECT m.*, ht.name AS home_team, at.name AS away_team
-            FROM matches m
-            JOIN teams ht ON ht.id = m.home_team_id
-            JOIN teams at ON at.id = m.away_team_id
-            WHERE m.id = ?
-        """, (match_id,)))
+        result = notify_match_participants(db, match_id)
 
-        if not match:
-            raise HTTPException(status_code=404, detail="Match not found")
-
-        # Get all participants with their predictions
-        participants = rows(db.execute("""
-            SELECT u.id, u.email, u.name,
-                   p.predicted_home_score, p.predicted_away_score,
-                   p.points_awarded, p.scoring_reason
-            FROM predictions p
-            JOIN users u ON u.id = p.user_id
-            WHERE p.match_id = ?
-        """, (match_id,)))
-
-        if not participants:
-            return {
-                "status": "no_participants",
-                "message": "No predictions found for this match",
-                "sent": 0, "skipped": 0, "failed": 0
-            }
-
-        game_label = match.get("game_no") or f"Match {match_id}"
-        home       = match.get("home_team", "Home")
-        away       = match.get("away_team", "Away")
-        home_score = match.get("home_score")
-        away_score = match.get("away_score")
-
-        if home_score is not None and away_score is not None:
-            result_line = f"Result: {home} {home_score} - {away_score} {away}"
-        else:
-            result_line = f"Match: {home} vs {away} (result pending)"
-
-        sent = skipped = failed = 0
-
-        for p in participants:
-            subject = f"⚽ {game_label} Update — {home} vs {away}"
-            body = (
-                f"Hi {p['name']},\n\n"
-                f"{result_line}\n\n"
-                f"Your prediction: {p['predicted_home_score']} - {p['predicted_away_score']}\n"
-                f"Points awarded:  {p['points_awarded'] or 0}\n"
-                f"Result:          {p['scoring_reason'] or 'Pending'}\n\n"
-                f"Check the leaderboard: https://worldcup-lv.onrender.com\n\n"
-                f"Good luck!\nWorldCup Prediction Team"
-            )
-            try:
-                status = send_email(p["email"], subject, body)
-                notif_id = queue_notification(db, p["email"], subject, body, p["id"])
-                db.execute(
-                    "UPDATE notifications SET status = ? WHERE id = ?",
-                    (status, notif_id)
-                )
-                if status == "sent":
-                    sent += 1
-                else:
-                    skipped += 1
-            except Exception as e:
-                failed += 1
-                queue_notification(db, p["email"], subject, body, p["id"])
-
+    if result.get("note") == "No predictions found for this match.":
         return {
-            "status": "success",
-            "match": f"{home} vs {away}",
-            "sent": sent,
-            "skipped": skipped,
-            "failed": failed,
-            "message": f"Sent: {sent}, Skipped: {skipped}, Failed: {failed}"
+            "status": "no_participants",
+            "message": result["note"],
+            "sent": 0, "skipped": 0, "failed": 0,
         }
 
+    return {
+        "status": "success",
+        "sent":    result["sent"],
+        "skipped": result["skipped"],
+        "failed":  result["failed"],
+        "message": f"Sent: {result['sent']}, Skipped: {result['skipped']}, Failed: {result['failed']}",
+    }
 
 # ── IMPORT FIFA WORLD CUP 2026 FIXTURES ──────────────────────────────────
 @router.post("/import-worldcup-fixtures/{tournament_id}")
