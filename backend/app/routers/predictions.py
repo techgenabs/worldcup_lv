@@ -10,19 +10,13 @@ router = APIRouter(prefix="/predictions", tags=["predictions"])
 
 
 def _auto_update_match_statuses(db) -> None:
-    """
-    Automatically move matches from 'scheduled' to 'live'
-    when their kickoff time has passed.
-    Called on every predictions fetch so the UI stays in sync
-    even if the scheduler hasn't run yet.
-    """
     db.execute(
         """
         UPDATE matches
         SET status = 'live'
         WHERE status = 'scheduled'
           AND match_date IS NOT NULL
-          AND match_date < datetime('now')
+          AND match_date < NOW()
         """
     )
 
@@ -35,7 +29,7 @@ def _match_for_prediction(db, match_id: int) -> dict:
             FROM matches m
             JOIN teams ht ON ht.id = m.home_team_id
             JOIN teams at ON at.id = m.away_team_id
-            WHERE m.id = ?
+            WHERE m.id = %s
             """,
             (match_id,),
         )
@@ -64,7 +58,7 @@ def create_prediction(payload: PredictionIn, user: dict = Depends(current_user))
             """
             INSERT INTO predictions (user_id, match_id, predicted_team_id, predicted_draw,
                                      predicted_home_score, predicted_away_score, confidence_level, confidence, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id, match_id)
             DO UPDATE SET predicted_team_id = excluded.predicted_team_id,
                           predicted_draw = excluded.predicted_draw,
@@ -86,13 +80,19 @@ def create_prediction(payload: PredictionIn, user: dict = Depends(current_user))
             ),
         )
         audit(db, "prediction_create_or_update", "prediction", payload.match_id, user["id"], payload.model_dump())
-        return row(db.execute("SELECT * FROM predictions WHERE user_id = ? AND match_id = ?", (user["id"], payload.match_id)))
+        return row(db.execute(
+            "SELECT * FROM predictions WHERE user_id = %s AND match_id = %s",
+            (user["id"], payload.match_id)
+        ))
 
 
 @router.put("/{prediction_id}")
 def update_prediction(prediction_id: int, payload: PredictionUpdate, user: dict = Depends(current_user)):
     with get_db() as db:
-        prediction = row(db.execute("SELECT * FROM predictions WHERE id = ? AND user_id = ?", (prediction_id, user["id"])))
+        prediction = row(db.execute(
+            "SELECT * FROM predictions WHERE id = %s AND user_id = %s",
+            (prediction_id, user["id"])
+        ))
         if not prediction:
             raise HTTPException(status_code=404, detail="Prediction not found")
         match = _match_for_prediction(db, prediction["match_id"])
@@ -105,9 +105,11 @@ def update_prediction(prediction_id: int, payload: PredictionUpdate, user: dict 
         db.execute(
             """
             UPDATE predictions
-            SET predicted_team_id = ?, predicted_draw = ?, predicted_home_score = ?, predicted_away_score = ?,
-                confidence_level = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            SET predicted_team_id = %s, predicted_draw = %s,
+                predicted_home_score = %s, predicted_away_score = %s,
+                confidence_level = %s, confidence = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
             """,
             (
                 predicted_team_id,
@@ -120,17 +122,20 @@ def update_prediction(prediction_id: int, payload: PredictionUpdate, user: dict 
             ),
         )
         audit(db, "prediction_update", "prediction", prediction_id, user["id"], payload.model_dump())
-        return row(db.execute("SELECT * FROM predictions WHERE id = ?", (prediction_id,)))
+        return row(db.execute("SELECT * FROM predictions WHERE id = %s", (prediction_id,)))
 
 
 @router.delete("/{prediction_id}")
 def delete_prediction(prediction_id: int, user: dict = Depends(current_user)):
     with get_db() as db:
-        prediction = row(db.execute("SELECT * FROM predictions WHERE id = ? AND user_id = ?", (prediction_id, user["id"])))
+        prediction = row(db.execute(
+            "SELECT * FROM predictions WHERE id = %s AND user_id = %s",
+            (prediction_id, user["id"])
+        ))
         if not prediction:
             raise HTTPException(status_code=404, detail="Prediction not found")
         _match_for_prediction(db, prediction["match_id"])
-        db.execute("DELETE FROM predictions WHERE id = ?", (prediction_id,))
+        db.execute("DELETE FROM predictions WHERE id = %s", (prediction_id,))
         audit(db, "prediction_delete", "prediction", prediction_id, user["id"])
     return {"status": "deleted"}
 
@@ -149,7 +154,7 @@ def mine(user: dict = Depends(current_user)):
                 JOIN matches m ON m.id = p.match_id
                 JOIN teams ht ON ht.id = m.home_team_id
                 JOIN teams at ON at.id = m.away_team_id
-                WHERE p.user_id = ?
+                WHERE p.user_id = %s
                 ORDER BY m.match_date DESC
                 """,
                 (user["id"],),
@@ -169,28 +174,20 @@ def leaderboard(country: str | None = None, user: dict = Depends(current_user)):
         """
         params = ()
         if country:
-            sql += " WHERE u.country = ?"
+            sql += " WHERE u.country = %s"
             params = (country,)
         sql += " ORDER BY l.rank LIMIT 50"
         return rows(db.execute(sql, params))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  /predictions/match/{match_id}
-#  Used by the Prediction List tab to load all participants' picks for a match.
-#  - Admin  → always returns ALL predictions for that match
-#  - User   → returns ALL predictions once match is locked/live/completed
-#             returns only their own prediction while still scheduled
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/match/{match_id}")
 def match_predictions(match_id: int, user: dict = Depends(current_user)):
     with get_db() as db:
         _auto_update_match_statuses(db)
-        match = row(db.execute("SELECT * FROM matches WHERE id = ?", (match_id,)))
+        match = row(db.execute("SELECT * FROM matches WHERE id = %s", (match_id,)))
         if not match:
             raise HTTPException(status_code=404, detail="Match not found")
 
-        # Admin always sees all predictions
         if user["role"] == "admin":
             return rows(
                 db.execute(
@@ -201,20 +198,13 @@ def match_predictions(match_id: int, user: dict = Depends(current_user)):
                            u.country AS user_country
                     FROM predictions p
                     JOIN users u ON u.id = p.user_id
-                    WHERE p.match_id = ?
+                    WHERE p.match_id = %s
                     ORDER BY p.points_awarded DESC, p.updated_at
                     """,
                     (match_id,),
                 )
             )
 
-        # Users: reveal everyone's predictions once the match is LOCKED or
-        # COMPLETED — i.e. as soon as predictions have closed for this game,
-        # any participant can see how everyone else predicted it, even
-        # before the final result is entered. Only while the match is still
-        # "scheduled" (predictions open, kickoff hasn't happened) does a
-        # user see only their own pick — this is what prevents bias while
-        # people are still allowed to change their prediction.
         if match["status"] in ("locked", "live", "completed"):
             return rows(
                 db.execute(
@@ -224,27 +214,21 @@ def match_predictions(match_id: int, user: dict = Depends(current_user)):
                            u.country AS user_country
                     FROM predictions p
                     JOIN users u ON u.id = p.user_id
-                    WHERE p.match_id = ?
+                    WHERE p.match_id = %s
                     ORDER BY p.points_awarded DESC, p.updated_at
                     """,
                     (match_id,),
                 )
             )
 
-        # Scheduled only: user sees only their own prediction
         return rows(
             db.execute(
-                "SELECT * FROM predictions WHERE match_id = ? AND user_id = ?",
+                "SELECT * FROM predictions WHERE match_id = %s AND user_id = %s",
                 (match_id, user["id"]),
             )
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  /predictions/admin/all
-#  Admin-only: returns every prediction across all matches with user + match info.
-#  This is the primary source for the admin Prediction List tab.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/admin/all")
 def all_predictions(admin: dict = Depends(admin_user)):
     with get_db() as db:
@@ -271,29 +255,11 @@ def all_predictions(admin: dict = Depends(admin_user)):
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  /predictions/all
-#  Alias of admin/all — kept for frontend compatibility.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/all")
 def all_predictions_alias(admin: dict = Depends(admin_user)):
     return all_predictions(admin)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  /predictions/match-winners
-#  TYPE A — Per-game winner: for each individual COMPLETED match, who
-#  predicted it best? Ranked purely by points_awarded (already computed by
-#  your scoring service), tiebreak by earliest submission (updated_at).
-#
-#  TYPE B — Overall tournament winner is the existing /predictions/leaderboard
-#  route above — cumulative points across the whole tournament. Unchanged.
-#
-#  Visibility: non-admin users only see matches they personally participated
-#  in, matching the same "hidden until completed, then participants-only"
-#  rule enforced in /predictions/match/{match_id} above. Admins see every
-#  completed match.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/match-winners")
 def match_winners(tournament_id: int | None = None, user: dict = Depends(current_user)):
     with get_db() as db:
@@ -313,20 +279,17 @@ def match_winners(tournament_id: int | None = None, user: dict = Depends(current
         """
         params: list = []
         if tournament_id:
-            base_sql += " AND m.tournament_id = ?"
+            base_sql += " AND m.tournament_id = %s"
             params.append(tournament_id)
 
-        # Non-admins only see matches they participated in
         if user["role"] != "admin":
-            base_sql += " AND m.id IN (SELECT match_id FROM predictions WHERE user_id = ?)"
+            base_sql += " AND m.id IN (SELECT match_id FROM predictions WHERE user_id = %s)"
             params.append(user["id"])
 
         base_sql += " ORDER BY m.match_date DESC, p.points_awarded DESC, p.updated_at ASC"
 
         all_rows = rows(db.execute(base_sql, tuple(params)))
 
-    # Group by match, then pick everyone tied at the top points_awarded
-    # value for that match (handles genuine ties fairly).
     by_match: dict[int, list[dict]] = {}
     for r in all_rows:
         by_match.setdefault(r["mid"], []).append(r)
@@ -349,9 +312,9 @@ def match_winners(tournament_id: int | None = None, user: dict = Depends(current
             "winning_points":     top_points,
             "winners": [
                 {
-                    "user_id":             w["uid"],
-                    "user_name":           w["user_name"],
-                    "user_country":        w["user_country"],
+                    "user_id":              w["uid"],
+                    "user_name":            w["user_name"],
+                    "user_country":         w["user_country"],
                     "predicted_home_score": w["predicted_home_score"],
                     "predicted_away_score": w["predicted_away_score"],
                     "points_awarded":       w["points_awarded"],
@@ -361,5 +324,4 @@ def match_winners(tournament_id: int | None = None, user: dict = Depends(current
         })
 
     results.sort(key=lambda r: r["match_date"] or "", reverse=True)
-
     return {"matches": results, "total_completed_matches": len(results)}
