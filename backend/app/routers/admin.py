@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from ..database import get_db, row, rows
 from ..deps import admin_user, current_user
 from ..security import hash_password
-
+from ..services.emailer import notify_match_participants
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
