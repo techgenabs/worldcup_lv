@@ -16,7 +16,7 @@ def _auto_update_match_statuses(db) -> None:
         SET status = 'live'
         WHERE status = 'scheduled'
           AND match_date IS NOT NULL
-          AND match_date < NOW()
+          AND match_date::timestamp < NOW()
         """
     )
 
