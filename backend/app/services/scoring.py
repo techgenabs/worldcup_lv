@@ -48,37 +48,47 @@ def is_prediction_locked(match: dict) -> bool:
 
 
 def confidence_bonus(level: str | None, base_points: int) -> int:
-    if (level or "").lower() == "high" and base_points > 0:
+    # Bonus only applies if exact score (10 pts)
+    if (level or "").lower() == "high" and base_points == 10:
         return 2
     return 0
 
 
 def score_prediction(prediction: dict, match: dict) -> tuple[int, int, str]:
+    """
+    Scoring rules:
+      Exact Score  → 10 points (+ 2 High Confidence bonus)
+      Everything else → 0 points
+    Outcome label is still recorded for display purposes.
+    """
     ph = int(prediction.get("predicted_home_score") or 0)
     pa = int(prediction.get("predicted_away_score") or 0)
     hs = int(match.get("home_score") or 0)
     away_score = int(match.get("away_score") or 0)
-    pred_delta = ph - pa
+
+    pred_delta   = ph - pa
     actual_delta = hs - away_score
-    exact = ph == hs and pa == away_score
+    exact        = ph == hs and pa == away_score
+
     if exact:
         base, reason = 10, "Exact Score"
     elif pred_delta == actual_delta and pred_delta != 0:
-        base, reason = 7, "Correct Winner + Goal Difference"
+        base, reason = 0, "Correct Winner + Goal Difference"
     elif pred_delta == 0 and actual_delta == 0:
-        base, reason = 5, "Correct Draw"
+        base, reason = 0, "Correct Draw"
     elif (pred_delta > 0 and actual_delta > 0) or (pred_delta < 0 and actual_delta < 0):
-        base, reason = 5, "Correct Winner"
+        base, reason = 0, "Correct Winner"
     else:
         base, reason = 0, "Wrong Prediction"
+
     bonus = confidence_bonus(prediction.get("confidence_level"), base)
     if bonus:
         reason = f"{reason} + High Confidence Bonus"
-    return base + bonus, 1 if base else 0, reason
+
+    return base + bonus, 1 if base == 10 else 0, reason
 
 
 def _pg_cursor(db):
-    """Get raw psycopg2 cursor from PgWrapper."""
     return db._conn.cursor()
 
 
@@ -193,29 +203,31 @@ def update_leaderboard(db, season: str = "2026") -> list[dict]:
     result_rows = []
     for user in users:
         cur.execute("""
-            SELECT COALESCE(SUM(points_awarded), 0) AS total_points,
-                   SUM(CASE WHEN scoring_reason LIKE %s THEN 1 ELSE 0 END) AS exact_matches,
-                   SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) AS winner_count,
-                   COUNT(*) AS predictions_count
+            SELECT
+                -- Only count points from Exact Score predictions
+                COALESCE(SUM(CASE WHEN scoring_reason LIKE %s THEN points_awarded ELSE 0 END), 0) AS total_points,
+                SUM(CASE WHEN scoring_reason LIKE %s THEN 1 ELSE 0 END) AS exact_matches,
+                COUNT(*) AS predictions_count
             FROM predictions
             WHERE user_id = %s AND scored_at IS NOT NULL
-        """, ('Exact Score%', user["id"]))
+        """, ('Exact Score%', 'Exact Score%', user["id"]))
         stats = _fetchone(cur)
 
-        total_points = int(stats.get("total_points") or 0)
-        exact_matches = int(stats.get("exact_matches") or 0)
-        winner_count = int(stats.get("winner_count") or 0)
+        total_points      = int(stats.get("total_points") or 0)
+        exact_matches     = int(stats.get("exact_matches") or 0)
         predictions_count = int(stats.get("predictions_count") or 0)
-        accuracy = round((winner_count / predictions_count * 100), 1) if predictions_count else 0
+        # winner_count same as exact_matches now (only exact scores win)
+        winner_count      = exact_matches
+        accuracy          = round((exact_matches / predictions_count * 100), 1) if predictions_count else 0
 
         result_rows.append({
-            "user_id": user["id"],
-            "name": user["name"],
-            "total_points": total_points,
-            "exact_matches": exact_matches,
-            "winner_count": winner_count,
+            "user_id":          user["id"],
+            "name":             user["name"],
+            "total_points":     total_points,
+            "exact_matches":    exact_matches,
+            "winner_count":     winner_count,
             "predictions_count": predictions_count,
-            "accuracy": accuracy,
+            "accuracy":         accuracy,
         })
 
     result_rows.sort(
@@ -255,14 +267,14 @@ def update_leaderboard(db, season: str = "2026") -> list[dict]:
             item["accuracy"], index, ", ".join(badges),
         ))
 
-        item["rank"] = index
+        item["rank"]   = index
         item["badges"] = badges
 
     return result_rows
 
 
 def complete_match_workflow(db, match_id: int) -> dict:
-    count = calculate_match_points(db, match_id)
+    count   = calculate_match_points(db, match_id)
     reports = export_reports(db, season="2026")
 
     cur = _pg_cursor(db)
