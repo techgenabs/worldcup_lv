@@ -13,114 +13,132 @@ from ..config import settings
 #  DATABASE — fetch full match + all participants' predictions
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_all_match_predictions(home_team: str = None, away_team: str = None, match_id: int = None) -> dict:
+# ─────────────────────────────────────────────────────────────────────────────
+#  NOTIFY MATCH PARTICIPANTS  — uses the FastAPI db connection (PostgreSQL)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def notify_match_participants(db, match_id: int) -> dict:
     """
-    Fetch match metadata and all participant predictions from the SQLite DB.
-    Can query by match_id (preferred) or by home/away team names.
+    Uses the passed-in db (PostgreSQL via FastAPI get_db) — no separate
+    SQLite connection needed. Sends full HTML group summary to every participant.
     """
-    db_path = "worldcup_ai.db"
-    result_data = {
-        "match":       "Unknown vs Unknown",
-        "game_no":     "—",
-        "round":       "—",
-        "date_npt":    "—",
-        "venue":       "—",
-        "final_score": "Pending",
-        "predictions": [],
+    from ..database import rows, row
+
+    # Fetch match metadata
+    match = row(db.execute("""
+        SELECT m.*, ht.name AS home_team, at.name AS away_team
+        FROM matches m
+        JOIN teams ht ON ht.id = m.home_team_id
+        JOIN teams at ON at.id = m.away_team_id
+        WHERE m.id = ?
+    """, (match_id,)))
+
+    if not match:
+        return {"sent": 0, "skipped": 0, "failed": 0,
+                "details": [], "note": "Match not found."}
+
+    # Fetch all predictions for this match
+    participants = rows(db.execute("""
+        SELECT u.name AS player_name, u.email AS player_email,
+               p.predicted_home_score, p.predicted_away_score,
+               p.points_awarded, p.scoring_reason
+        FROM predictions p
+        JOIN users u ON u.id = p.user_id
+        WHERE p.match_id = ?
+    """, (match_id,)))
+
+    if not participants:
+        return {"sent": 0, "skipped": 0, "failed": 0,
+                "details": [], "note": "No predictions found for this match."}
+
+    # Build match data dict
+    home = match.get("home_team") or "?"
+    away = match.get("away_team") or "?"
+    h_score = match.get("home_score")
+    a_score = match.get("away_score")
+    status  = (match.get("status") or "").lower()
+    final_score = f"{h_score}-{a_score}" if status == "completed" and h_score is not None and a_score is not None else "Pending"
+
+    predictions = []
+    for p in participants:
+        ph = p.get("predicted_home_score")
+        pa = p.get("predicted_away_score")
+        predicted = f"{ph}-{pa}" if ph is not None and pa is not None else "—"
+        points    = p.get("points_awarded") or 0
+        reason    = (p.get("scoring_reason") or "").lower().replace("_", " ")
+
+        if not reason or status in ("scheduled", "live", "pending"):
+            outcome = "Pending"
+        elif "exact" in reason:
+            outcome = "Exact Score"
+        elif "correct" in reason or "winner" in reason:
+            outcome = "Correct Winner"
+        else:
+            outcome = "Wrong Prediction"
+
+        predictions.append({
+            "name":        p.get("player_name") or "User",
+            "email":       p.get("player_email") or "",
+            "predicted":   predicted,
+            "final_score": final_score,
+            "outcome":     outcome,
+            "points":      int(points),
+        })
+
+    match_data = {
+        "match":       f"{home} vs {away}",
+        "game_no":     match.get("game_no") or "—",
+        "round":       match.get("round")   or "—",
+        "date_npt":    match.get("match_date") or "—",
+        "venue":       match.get("stadium") or "—",
+        "final_score": final_score,
+        "predictions": predictions,
     }
 
-    if not os.path.exists(db_path):
-        return result_data
+    html_body  = build_email_html(match_data)
+    subject    = f"Prediction Results: {match_data['match']} ({match_data['game_no']})"
+    plain_body = (
+        f"Match: {match_data['match']}\n"
+        f"Game No: {match_data['game_no']} | Round: {match_data['round']}\n"
+        f"Date: {match_data['date_npt']}\n"
+        f"Venue: {match_data['venue']}\n\n"
+        f"Total Predictions: {len(predictions)}\n"
+        f"Total Winners (Exact Score): {sum(1 for p in predictions if p['outcome'] == 'Exact Score')}\n\n"
+        "Open this email in an HTML-capable client to see the full table.\n"
+        "Leaderboard: https://worldcup-lv.onrender.com"
+    )
 
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = lambda cursor, row: {
-            col[0]: row[idx] for idx, col in enumerate(cursor.description)
-        }
+    sent = skipped = failed = 0
+    details = []
 
-        if match_id:
-            where_clause = "m.id = ?"
-            params = (match_id,)
-        else:
-            where_clause = "ht.name LIKE ? AND at.name LIKE ?"
-            params = (f"%{home_team}%", f"%{away_team}%")
+    for pred in predictions:
+        email = (pred.get("email") or "").strip()
+        if not email or "@" not in email:
+            failed += 1
+            details.append({"email": email or "—", "status": "failed",
+                             "error": "invalid or missing email"})
+            continue
+        try:
+            status_result = send_email(email, subject, plain_body, html_body=html_body)
+            queue_notification(db, email, subject, plain_body, user_id=None)
+            try:
+                db.execute(
+                    "UPDATE notifications SET status = ? "
+                    "WHERE id = (SELECT MAX(id) FROM notifications WHERE recipient = ?)",
+                    (status_result, email),
+                )
+            except Exception:
+                pass
+            if status_result == "sent":
+                sent += 1
+            else:
+                skipped += 1
+            details.append({"email": email, "status": status_result})
+        except Exception as exc:
+            failed += 1
+            details.append({"email": email, "status": "failed", "error": str(exc)})
 
-        query = f"""
-            SELECT
-                u.name            AS player_name,
-                u.email           AS player_email,
-                p.predicted_home_score,
-                p.predicted_away_score,
-                p.points_awarded,
-                p.scoring_reason,
-                m.id              AS match_id,
-                m.game_no,
-                m.round,
-                m.match_date,
-                m.stadium,
-                m.status          AS match_status,
-                m.home_score,
-                m.away_score,
-                ht.name           AS home_team,
-                at.name           AS away_team
-            FROM predictions p
-            JOIN users   u  ON p.user_id    = u.id
-            JOIN matches m  ON p.match_id   = m.id
-            JOIN teams   ht ON m.home_team_id = ht.id
-            JOIN teams   at ON m.away_team_id = at.id
-            WHERE {where_clause}
-        """
-
-        rows = conn.execute(query, params).fetchall()
-
-        if rows:
-            first = rows[0]
-            home = first.get("home_team") or "?"
-            away = first.get("away_team") or "?"
-            result_data["match"]    = f"{home} vs {away}"
-            result_data["game_no"]  = first.get("game_no")   or "—"
-            result_data["round"]    = first.get("round")     or "—"
-            result_data["date_npt"] = first.get("match_date") or "—"
-            result_data["venue"]    = first.get("stadium")   or "—"
-
-            h_score = first.get("home_score")
-            a_score = first.get("away_score")
-            status  = (first.get("match_status") or "").lower()
-            if status == "completed" and h_score is not None and a_score is not None:
-                result_data["final_score"] = f"{h_score}-{a_score}"
-
-            for r in rows:
-                ph = r.get("predicted_home_score")
-                pa = r.get("predicted_away_score")
-                predicted    = f"{ph}-{pa}" if ph is not None and pa is not None else "—"
-                points       = r.get("points_awarded") or 0
-                reason       = (r.get("scoring_reason") or "").lower().replace("_", " ")
-                match_status = (r.get("match_status") or "").lower()
-
-                # Derive outcome label — mirrors the JSX OutcomePill logic
-                if match_status in ("scheduled", "live", "pending") or not reason:
-                    outcome = "Pending"
-                elif "exact" in reason:
-                    outcome = "Exact Score"
-                elif "correct" in reason or "winner" in reason:
-                    outcome = "Correct Winner"
-                else:
-                    outcome = "Wrong Prediction"
-
-                result_data["predictions"].append({
-                    "name":        r.get("player_name") or "User",
-                    "email":       r.get("player_email") or "",
-                    "predicted":   predicted,
-                    "final_score": result_data["final_score"],
-                    "outcome":     outcome,
-                    "points":      int(points),
-                })
-
-        conn.close()
-    except Exception:
-        pass
-
-    return result_data
+    return {"sent": sent, "skipped": skipped, "failed": failed, "details": details}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
