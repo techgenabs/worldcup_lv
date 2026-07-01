@@ -151,7 +151,7 @@ def analytics(admin: dict = Depends(admin_user)):
 @router.post("/notify/match-participants/{match_id}")
 def notify_match_participants_endpoint(match_id: int, admin: dict = Depends(admin_user)):
     """Send HTML group summary email to all users who predicted this match."""
-    from ..services.mailer import notify_match_participants
+    from ..services.emailer import notify_match_participants
 
     with get_db() as db:
         result = notify_match_participants(db, match_id)
