@@ -128,13 +128,19 @@ def update_prediction(prediction_id: int, payload: PredictionUpdate, user: dict 
 @router.delete("/{prediction_id}")
 def delete_prediction(prediction_id: int, user: dict = Depends(current_user)):
     with get_db() as db:
-        prediction = row(db.execute(
-            "SELECT * FROM predictions WHERE id = %s AND user_id = %s",
-            (prediction_id, user["id"])
-        ))
+        if user["role"] == "admin":
+            prediction = row(db.execute(
+                "SELECT * FROM predictions WHERE id = %s", (prediction_id,)
+            ))
+        else:
+            prediction = row(db.execute(
+                "SELECT * FROM predictions WHERE id = %s AND user_id = %s",
+                (prediction_id, user["id"])
+            ))
         if not prediction:
             raise HTTPException(status_code=404, detail="Prediction not found")
-        _match_for_prediction(db, prediction["match_id"])
+        if user["role"] != "admin":
+            _match_for_prediction(db, prediction["match_id"])
         db.execute("DELETE FROM predictions WHERE id = %s", (prediction_id,))
         audit(db, "prediction_delete", "prediction", prediction_id, user["id"])
     return {"status": "deleted"}
