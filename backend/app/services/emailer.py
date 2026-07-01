@@ -87,7 +87,7 @@ def build_email_html(match_data: dict) -> str:
         <a href="https://worldcup-lv.onrender.com">worldcup-lv.onrender.com</a>
       </p>
       <p style="margin-top:4px;color:#888;font-size:12px;">
-        WorldCup LV Predictions — Automated result mailer
+        Predict
       </p>
     </body>
     </html>
